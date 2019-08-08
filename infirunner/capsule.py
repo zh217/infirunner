@@ -223,6 +223,15 @@ class RunnerCapsule:
         self.stdout = self.stderr = self.orig_stdout = self.orig_stderr = None
         self.mode = self.set_mode(mode)
 
+    def is_debug(self):
+        return self.mode == DEBUG_MODE
+
+    def is_search(self):
+        return self.mode == SEARCH_MODE
+
+    def is_turbo(self):
+        return self.mode == TURBO_MODE
+
     def set_mode(self, mode):
         assert mode in (DEBUG_MODE, SEARCH_MODE, TURBO_MODE)
         self.mode = mode
