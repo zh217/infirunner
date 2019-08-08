@@ -5,6 +5,9 @@ import string
 import time
 import datetime
 import json
+import sys
+import inspect
+import shutil
 
 import torch
 
@@ -105,12 +108,29 @@ class Param(ABC):
 
     def __call__(self, f):
         @functools.wraps(f)
-        def wrapper(*args, **kwargs):
+        def wrapper(params=None, **kwargs):
             self._capsule.mark_used()
-            params = kwargs.get('params', Box())
-            params[self._key] = self._capsule.params[self._key]
-            kwargs['params'] = params
-            return f(*args, **kwargs)
+            _params = params
+            if not isinstance(_params, Box):
+                params = Box(default_box=True)
+            else:
+                params = _params
+            if _params is not None:
+                for ks, v in _params.items():
+                    ks = ks.split('.')
+                    cur = params
+                    for k in ks[:-1]:
+                        cur = cur[k]
+                    cur[ks[-1]] = v
+
+            cur = params
+            ks = self._key.split('.')
+            for k in ks[:-1]:
+                cur = cur[k]
+            if ks[-1] not in cur:
+                cur[ks[-1]] = self._capsule.params[self._key]
+
+            return f(params, **kwargs)
 
         return wrapper
 
@@ -189,7 +209,6 @@ TURBO_MODE = 'turbo_mode'
 class RunnerCapsule:
     def __init__(self, mode, turbo_index, save_path, trial_id, steps):
         self.params = {}
-        self.mode = mode
         self.turbo_index = turbo_index
         self.initialized = False
         self.save_path = save_path
@@ -201,6 +220,66 @@ class RunnerCapsule:
         self.metric = None
         self.get_model_state = None
         self.get_metadata_state = None
+        self.stdout = self.stderr = self.orig_stdout = self.orig_stderr = None
+        self.mode = self.set_mode(mode)
+
+    def set_mode(self, mode):
+        assert mode in (DEBUG_MODE, SEARCH_MODE, TURBO_MODE)
+        self.mode = mode
+        if self.mode == DEBUG_MODE:
+            self.restore_io()
+        else:
+            self.redirect_io()
+        return mode
+
+    def redirect_io(self):
+        stdout_file = os.path.join(self.save_path, f'std_out_{self.turbo_index}.log')
+        stderr_file = os.path.join(self.save_path, f'std_err_{self.turbo_index}.log')
+        self.orig_stdout = sys.stdout
+        self.orig_stderr = sys.stderr
+        self.stdout = sys.stdout = open(stdout_file, 'a', encoding='utf-8')
+        self.stderr = sys.stderr = open(stderr_file, 'a', encoding='utf-8')
+
+    def restore_io(self):
+        if self.stdout:
+            sys.stdout = self.orig_stdout
+        if self.stderr:
+            sys.stderr = self.orig_stderr
+        try:
+            self.stdout.close()
+        except:
+            pass
+        try:
+            self.stderr.close()
+        except:
+            pass
+        del self.stdout
+        del self.stderr
+
+    def save_sources(self, white_list=None):
+        if white_list is None:
+            frm = inspect.stack()[1]
+            mod = inspect.getmodule(frm[0])
+            if not mod:
+                raise AttributeError('save_sources needs to be called from a module!')
+            white_list = [mod.__name__.split('.')[0]]
+
+        source_dir = os.path.join(self.save_path, 'src')
+        if os.path.exists(source_dir):
+            shutil.rmtree(source_dir, ignore_errors=True)
+        mods = {k: m for k, m in sys.modules
+                if any(k.startswith(p) for p in white_list)}
+
+        for k, m in mods:
+            try:
+                source = inspect.getsource(m)
+            except OSError:
+                continue
+            m_comps = k.split('.')
+            source_save_path = os.path.join(source_dir, *m_comps[:-1])
+            os.makedirs(source_save_path, exist_ok=True)
+            with open(os.path.join(source_save_path, m_comps[-1] + '.py'), 'w', encoding='utf-8') as f:
+                f.write(source)
 
     def set_state_getter(self, model_state_getter, metadata_state_getter):
         self.get_model_state = model_state_getter
@@ -391,7 +470,8 @@ class DynamicStateGetter:
         return ret
 
 
-def make_capsule(exp_path=None):
+def make_capsule():
+    exp_path = os.environ.get('INFIRUNNER_EXP_PATH')
     if exp_path is None:
         exp_path = os.path.join(os.getcwd(), '_infirunner')
 
@@ -402,9 +482,7 @@ def make_capsule(exp_path=None):
     if trial_id is None:
         rd_id = ''.join(random.choice(string.ascii_letters) for _ in range(6))
         trial_id = f'{datetime.datetime.now():%y%m%d_%H%M%S}_{rd_id}'
-    save_path = os.environ.get('INFIRUNNER_SAVE_PATH', None)
-    if save_path is None:
-        save_path = os.path.join(exp_path, trial_id)
+    save_path = os.path.join(exp_path, trial_id)
     os.makedirs(save_path, exist_ok=True)
     steps = int(os.environ.get('INFIRUNNER_TURBO_INDEX', '0'))
     _cap = RunnerCapsule(mode, turbo_index, save_path, trial_id, steps)
@@ -412,3 +490,19 @@ def make_capsule(exp_path=None):
 
 
 runner = make_capsule()
+
+if __name__ == '__main__':
+    runner.set_mode(SEARCH_MODE)
+
+
+    @runner.unif('a.b.xxx', 1, 0.5, 1.5)
+    @runner.const('a.b.c.d', 1, 2)
+    def x(z):
+        print(z.a.b)
+
+
+    x()
+    x(params={'a.b.c.d': 1212})
+
+    print(runner.params)
+    print(runner.serialize_state())
