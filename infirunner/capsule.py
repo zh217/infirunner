@@ -232,6 +232,8 @@ class RunnerCapsule:
         self.get_metadata_state = None
         self.stdout = self.stderr = self.orig_stdout = self.orig_stderr = None
         self.mode = self.set_mode(mode)
+        self.prev_time = 0
+        self.start_time = time.time()
 
     def is_debug(self):
         return self.mode == DEBUG_MODE
@@ -309,9 +311,14 @@ class RunnerCapsule:
         self.get_metadata_state = metadata_state_getter
 
     def serialize_state(self):
+        now = time.time()
         return {
             'save_path': self.save_path,
             'trial_id': self.trial_id,
+            'prev_time': self.prev_time,
+            'start_time': self.start_time,
+            'cur_time': now,
+            'relative_time': self.prev_time + now - self.start_time,
             'mode': self.mode,
             'metric': self.metric,
             'steps': self.steps,
@@ -340,13 +347,16 @@ class RunnerCapsule:
         return log_file
 
     def log_scalar(self, key, value):
-        self.get_log_file_handle(key).write(f'{self.steps}\t{time.time()}\t{value}\n')
+        now = time.time()
+        rel_time = self.prev_time + now - self.start_time
+        self.get_log_file_handle(key).write(f'{self.steps}\t{now}\t{rel_time}\t{value}\n')
 
     def log_scalars(self, key, values):
         log_file = self.get_log_file_handle(key)
         now = time.time()
+        rel_time = self.prev_time + now - self.start_time
         for v in values:
-            log_file.write(f'{self.steps}\t{now}\t{v}\n')
+            log_file.write(f'{self.steps}\t{now}\t{rel_time}\t{v}\n')
 
     def log_file(self, key, ext, data):
         p = os.path.join(self.save_path, 'logs', key)
