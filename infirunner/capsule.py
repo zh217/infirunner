@@ -44,13 +44,15 @@ class RunningAverage:
         return avg
 
     def write_to_log(self, flush=False):
-        self.capsule.log_scalar(self.key, self.get())
+        if self.capsule.is_leader():
+            self.capsule.log_scalar(self.key, self.get())
         if flush:
             self.reset()
 
     def write_to_tb(self, flush=True):
-        writer = self.capsule.get_tb_writer()
-        writer.add_scalar(self.key, self.get(), self.capsule.steps)
+        if self.capsule.is_leader():
+            writer = self.capsule.get_tb_writer()
+            writer.add_scalar(self.key, self.get(), self.capsule.steps)
         if flush:
             self.reset()
 
@@ -99,6 +101,10 @@ class Param(ABC):
     def get_next_value(self):
         pass
 
+    @abstractmethod
+    def serialize_as_nni(self):
+        pass
+
     def serialize(self):
         ret = {}
         for k, v in self.__dict__.items():
@@ -110,13 +116,15 @@ class Param(ABC):
         if inspect.ismethod(f) or f.__name__ == '__init__':
             @functools.wraps(f)
             def wrapper(this, params=None, **kwargs):
-                self._capsule.mark_used()
+                if not self._capsule.initialized:
+                    raise RuntimeError('Must initialize capsule before use')
                 params = self._process_params(params)
                 return f(this, params, **kwargs)
         else:
             @functools.wraps(f)
             def wrapper(params=None, **kwargs):
-                self._capsule.mark_used()
+                if not self._capsule.initialized:
+                    raise RuntimeError('Must initialize capsule before use')
                 params = self._process_params(params)
 
                 return f(params, **kwargs)
@@ -160,6 +168,9 @@ class ConstParam(Param):
     def get_next_value(self):
         return self.const
 
+    def serialize_as_nni(self):
+        return None
+
 
 class ChoiceParam(Param):
     def __init__(self, capsule, key, default, choices, prob=None):
@@ -169,6 +180,12 @@ class ChoiceParam(Param):
 
     def get_next_value(self):
         return np.random.choice(self.choices, p=self.prob)
+
+    def serialize_as_nni(self):
+        return {
+            '_type': 'choice',
+            '_value': self.choices
+        }
 
 
 class RandomIntParam(Param):
@@ -180,6 +197,12 @@ class RandomIntParam(Param):
     def get_next_value(self):
         return np.random.randint(self.low, self.high)
 
+    def serialize_as_nni(self):
+        return {
+            '_type': 'randint',
+            '_value': [self.low, self.high]
+        }
+
 
 class UniformParam(Param):
     def __init__(self, capsule, key, default, low, high):
@@ -189,6 +212,12 @@ class UniformParam(Param):
 
     def get_next_value(self):
         return np.random.uniform(self.low, self.high)
+
+    def serialize_as_nni(self):
+        return {
+            '_type': 'uniform',
+            '_value': [self.low, self.high]
+        }
 
 
 def _clip(val, q, low, high):
@@ -205,6 +234,12 @@ class QUniformParam(Param):
     def get_next_value(self):
         return _clip(random.uniform(self.low, self.high), self.q, self.low, self.high)
 
+    def serialize_as_nni(self):
+        return {
+            '_type': 'quniform',
+            '_value': [self.low, self.high, self.q]
+        }
+
 
 class LogUniformParam(Param):
     def __init__(self, capsule, key, default, low, high):
@@ -214,6 +249,12 @@ class LogUniformParam(Param):
 
     def get_next_value(self):
         return np.exp(np.random.uniform(np.log(self.low), np.log(self.high)))
+
+    def serialize_as_nni(self):
+        return {
+            '_type': 'loguniform',
+            '_value': [self.low, self.high]
+        }
 
 
 class QLogUniformParam(Param):
@@ -226,6 +267,12 @@ class QLogUniformParam(Param):
     def get_next_value(self):
         return _clip(np.exp(np.random.uniform(np.log(self.low), np.log(self.high))), self.q, self.low, self.high)
 
+    def serialize_as_nni(self):
+        return {
+            '_type': 'qloguniform',
+            '_value': [self.low, self.high, self.q]
+        }
+
 
 class NormalParam(Param):
     def __init__(self, capsule, key, default, mean, std):
@@ -235,6 +282,62 @@ class NormalParam(Param):
 
     def get_next_value(self):
         return np.random.normal(self.mean, self.std)
+
+    def serialize_as_nni(self):
+        return {
+            '_type': 'normal',
+            '_value': [self.mean, self.std]
+        }
+
+
+class QNormalParam(Param):
+    def __init__(self, capsule, key, default, mean, std, q):
+        super().__init__(capsule, key, default)
+        self.mean = mean
+        self.std = std
+        self.q = q
+
+    def get_next_value(self):
+        return np.round(np.random.normal(self.mean, self.std) / self.q) * self.q
+
+    def serialize_as_nni(self):
+        return {
+            '_type': 'qnormal',
+            '_value': [self.mean, self.std, self.q]
+        }
+
+
+class LogNormalParam(Param):
+    def __init__(self, capsule, key, default, mean, std):
+        super().__init__(capsule, key, default)
+        self.mean = mean
+        self.std = std
+
+    def get_next_value(self):
+        return np.exp(np.random.normal(self.mean, self.std))
+
+    def serialize_as_nni(self):
+        return {
+            '_type': 'lognormal',
+            '_value': [self.mean, self.std]
+        }
+
+
+class QLogNormalParam(Param):
+    def __init__(self, capsule, key, default, mean, std, q):
+        super().__init__(capsule, key, default)
+        self.mean = mean
+        self.std = std
+        self.q = q
+
+    def get_next_value(self):
+        return np.round(np.exp(np.random.normal(self.mean, self.std)) / self.q) * self.q
+
+    def serialize_as_nni(self):
+        return {
+            '_type': 'qlognormal',
+            '_value': [self.mean, self.std, self.q]
+        }
 
 
 DEBUG_MODE = 'debug_mode'
@@ -260,6 +363,17 @@ class RunnerCapsule:
         self.mode = self.set_mode(mode)
         self.prev_time = 0
         self.start_time = time.time()
+
+    def is_leader(self):
+        return self.turbo_index == 0
+
+    def serialize_param_gen_as_nni(self):
+        ret = {}
+        for k, v in self._param_wrappers.items():
+            serialized = v.serialize_as_nni()
+            if serialized:
+                ret[k] = serialized
+        return ret
 
     def is_debug(self):
         return self.mode == DEBUG_MODE
@@ -305,6 +419,9 @@ class RunnerCapsule:
 
     def save_sources(self, white_list=None):
         self.load()
+        if not self.is_leader():
+            return
+
         if white_list is None:
             frm = inspect.stack()[1]
             mod = inspect.getmodule(frm[0])
@@ -373,11 +490,15 @@ class RunnerCapsule:
         return log_file
 
     def log_scalar(self, key, value):
+        if not self.is_leader():
+            return
         now = time.time()
         rel_time = self.prev_time + now - self.start_time
         self.get_log_file_handle(key).write(f'{self.steps}\t{now}\t{rel_time}\t{value}\n')
 
     def log_scalars(self, key, values):
+        if not self.is_leader():
+            return
         log_file = self.get_log_file_handle(key)
         now = time.time()
         rel_time = self.prev_time + now - self.start_time
@@ -385,6 +506,8 @@ class RunnerCapsule:
             log_file.write(f'{self.steps}\t{now}\t{rel_time}\t{v}\n')
 
     def log_file(self, key, ext, data):
+        if not self.is_leader():
+            return
         p = os.path.join(self.save_path, 'logs', key)
         os.makedirs(p, exist_ok=True)
         with open(os.path.join(p, f'{self.steps:015}.{ext}', 'wb')) as file:
@@ -412,7 +535,16 @@ class RunnerCapsule:
         return self._make_param_wrapper(key, QLogUniformParam(self, key, default, low, high, q))
 
     def normal(self, key, default, mean, std):
-        return self._make_param_wrapper(key, LogUniformParam(self, key, default, mean, std))
+        return self._make_param_wrapper(key, NormalParam(self, key, default, mean, std))
+
+    def qnormal(self, key, default, mean, std, q):
+        return self._make_param_wrapper(key, QNormalParam(self, key, default, mean, std, q))
+
+    def lognormal(self, key, default, mean, std):
+        return self._make_param_wrapper(key, LogNormalParam(self, key, default, mean, std))
+
+    def qlognormal(self, key, default, mean, std, q):
+        return self._make_param_wrapper(key, QLogNormalParam(self, key, default, mean, std, q))
 
     def serialize_param_gen(self):
         ret = {}
@@ -479,11 +611,13 @@ class RunnerCapsule:
         return model_state, metadata
 
     def get_tb_writer(self):
+        if not self.is_leader():
+            return None
         if self._tb_writer is None:
             self._tb_writer = SummaryWriter(log_dir=self.save_path)
         return self._tb_writer
 
-    def mark_used(self):
+    def initialize(self):
         if not self.initialized:
             self.initialized = True
             for k, w in self._param_wrappers.items():
@@ -531,7 +665,7 @@ class RunnerCapsule:
                 pass
         if load_path is not None:
             self.load_state(load_path)
-        self.mark_used()
+        self.initialize()
 
 
 class DynamicStateGetter:
@@ -564,10 +698,6 @@ def make_capsule():
         rd_id = ''.join(random.choice(string.ascii_letters) for _ in range(6))
         trial_id = f'{datetime.datetime.now():%y%m%d_%H%M%S}_{rd_id}'
     save_path = os.path.join(exp_path, trial_id)
-    os.makedirs(save_path, exist_ok=True)
     steps = int(os.environ.get('INFIRUNNER_TURBO_INDEX', '0'))
     _cap = RunnerCapsule(mode, turbo_index, save_path, trial_id, steps)
     return _cap
-
-
-runner = make_capsule()
