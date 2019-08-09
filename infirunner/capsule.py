@@ -107,32 +107,42 @@ class Param(ABC):
         return ret
 
     def __call__(self, f):
-        @functools.wraps(f)
-        def wrapper(params=None, **kwargs):
-            self._capsule.mark_used()
-            _params = params
-            if not isinstance(_params, Box):
-                params = Box(default_box=True)
-            else:
-                params = _params
-            if _params is not None:
-                for ks, v in _params.items():
-                    ks = ks.split('.')
-                    cur = params
-                    for k in ks[:-1]:
-                        cur = cur[k]
-                    cur[ks[-1]] = v
+        if inspect.ismethod(f) or f.__name__ == '__init__':
+            @functools.wraps(f)
+            def wrapper(this, params=None, **kwargs):
+                self._capsule.mark_used()
+                params = self._process_params(params)
+                return f(this, params, **kwargs)
+        else:
+            @functools.wraps(f)
+            def wrapper(params=None, **kwargs):
+                self._capsule.mark_used()
+                params = self._process_params(params)
 
-            cur = params
-            ks = self._key.split('.')
-            for k in ks[:-1]:
-                cur = cur[k]
-            if ks[-1] not in cur:
-                cur[ks[-1]] = self._capsule.params[self._key]
-
-            return f(params, **kwargs)
+                return f(params, **kwargs)
 
         return wrapper
+
+    def _process_params(self, params):
+        _params = params
+        if not isinstance(_params, Box):
+            params = Box(default_box=True)
+        else:
+            params = _params
+        if _params is not None:
+            for ks, v in _params.items():
+                ks = ks.split('.')
+                cur = params
+                for k in ks[:-1]:
+                    cur = cur[k]
+                cur[ks[-1]] = v
+        cur = params
+        ks = self._key.split('.')
+        for k in ks[:-1]:
+            cur = cur[k]
+        if ks[-1] not in cur:
+            cur[ks[-1]] = self._capsule.params[self._key]
+        return params
 
     def __repr__(self):
         repr_str = f'<{self.__class__.__name__}'
@@ -266,6 +276,7 @@ class RunnerCapsule:
         del self.stderr
 
     def save_sources(self, white_list=None):
+        self.load()
         if white_list is None:
             frm = inspect.stack()[1]
             mod = inspect.getmodule(frm[0])
@@ -276,10 +287,10 @@ class RunnerCapsule:
         source_dir = os.path.join(self.save_path, 'src')
         if os.path.exists(source_dir):
             shutil.rmtree(source_dir, ignore_errors=True)
-        mods = {k: m for k, m in sys.modules
+        mods = {k: m for k, m in sys.modules.items()
                 if any(k.startswith(p) for p in white_list)}
 
-        for k, m in mods:
+        for k, m in mods.items():
             try:
                 source = inspect.getsource(m)
             except OSError:
@@ -289,6 +300,9 @@ class RunnerCapsule:
             os.makedirs(source_save_path, exist_ok=True)
             with open(os.path.join(source_save_path, m_comps[-1] + '.py'), 'w', encoding='utf-8') as f:
                 f.write(source)
+
+        with open(os.path.join(source_dir, 'state.json'), 'w') as f:
+            json.dump(self.serialize_state(), f, ensure_ascii=False, indent=2, allow_nan=True)
 
     def set_state_getter(self, model_state_getter, metadata_state_getter):
         self.get_model_state = model_state_getter
@@ -317,11 +331,20 @@ class RunnerCapsule:
             except:
                 pass
 
-    def log_scalar(self, key, value):
+    def get_log_file_handle(self, key):
         log_file = self.log_files.get(key)
         if log_file is None:
+            os.makedirs(os.path.join(self.save_path, 'logs'), exist_ok=True)
             log_file = open(os.path.join(self.save_path, 'logs', f'{key}.tsv'), 'a')
-        log_file.write(f'{self.steps}\t{value}\n')
+        return log_file
+
+    def log_scalar(self, key, value):
+        self.get_log_file_handle(key).write(f'{self.steps}\t{value}\n')
+
+    def log_scalars(self, key, values):
+        log_file = self.get_log_file_handle(key)
+        for v in values:
+            log_file.write(f'{self.steps}\t{v}\n')
 
     def log_file(self, key, ext, data):
         p = os.path.join(self.save_path, 'logs', key)
@@ -332,7 +355,7 @@ class RunnerCapsule:
     def const(self, key, default, value):
         return self._make_param_wrapper(key, ConstParam(self, key, default, value))
 
-    def choice(self, key, default, choices, prob):
+    def choice(self, key, default, choices, prob=None):
         return self._make_param_wrapper(key, ChoiceParam(self, key, default, choices, prob))
 
     def randint(self, key, default, low, high):
@@ -449,6 +472,8 @@ class RunnerCapsule:
         return old_cuda_state, old_np_state, old_state, old_th_state
 
     def load(self, load_path=None):
+        if self.initialized:
+            return
         if load_path is None:
             try:
                 saves = os.listdir(os.path.join(self.save_path, 'saves'))
@@ -458,7 +483,7 @@ class RunnerCapsule:
             except FileNotFoundError:
                 pass
         if load_path is not None:
-            self.load(load_path)
+            self.load_state(load_path)
         self.mark_used()
 
 
