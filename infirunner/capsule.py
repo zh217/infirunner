@@ -312,6 +312,7 @@ class RunnerCapsule:
         return {
             'save_path': self.save_path,
             'trial_id': self.trial_id,
+            'mode': self.mode,
             'metric': self.metric,
             'steps': self.steps,
             'params': self.params,
@@ -391,6 +392,9 @@ class RunnerCapsule:
     def set_params(self, param_map):
         self._guard_params()
         self.params.update(param_map)
+
+    def set_metric(self, metric):
+        self.metric = metric
 
     def save_state(self):
         if self.turbo_index != 0:
