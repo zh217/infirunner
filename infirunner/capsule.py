@@ -191,6 +191,21 @@ class UniformParam(Param):
         return np.random.uniform(self.low, self.high)
 
 
+def _clip(val, q, low, high):
+    return np.clip(np.round(val / q) * q, low, high)
+
+
+class QUniformParam(Param):
+    def __init__(self, capsule, key, default, low, high, q):
+        super().__init__(capsule, key, default)
+        self.low = low
+        self.high = high
+        self.q = q
+
+    def get_next_value(self):
+        return _clip(random.uniform(self.low, self.high), self.q, self.low, self.high)
+
+
 class LogUniformParam(Param):
     def __init__(self, capsule, key, default, low, high):
         super().__init__(capsule, key, default)
@@ -199,6 +214,17 @@ class LogUniformParam(Param):
 
     def get_next_value(self):
         return np.exp(np.random.uniform(np.log(self.low), np.log(self.high)))
+
+
+class QLogUniformParam(Param):
+    def __init__(self, capsule, key, default, low, high, q):
+        super().__init__(capsule, key, default)
+        self.low = low
+        self.high = high
+        self.q = q
+
+    def get_next_value(self):
+        return _clip(np.exp(np.random.uniform(np.log(self.low), np.log(self.high))), self.q, self.low, self.high)
 
 
 class NormalParam(Param):
@@ -376,8 +402,14 @@ class RunnerCapsule:
     def unif(self, key, default, low, high):
         return self._make_param_wrapper(key, UniformParam(self, key, default, low, high))
 
+    def qunif(self, key, default, low, high, q):
+        return self._make_param_wrapper(key, QUniformParam(self, key, default, low, high, q))
+
     def logunif(self, key, default, low, high):
         return self._make_param_wrapper(key, LogUniformParam(self, key, default, low, high))
+
+    def qlogunif(self, key, default, low, high, q):
+        return self._make_param_wrapper(key, QLogUniformParam(self, key, default, low, high, q))
 
     def normal(self, key, default, mean, std):
         return self._make_param_wrapper(key, LogUniformParam(self, key, default, mean, std))
