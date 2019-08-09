@@ -528,19 +528,3 @@ def make_capsule():
 
 
 runner = make_capsule()
-
-if __name__ == '__main__':
-    runner.set_mode(SEARCH_MODE)
-
-
-    @runner.unif('a.b.xxx', 1, 0.5, 1.5)
-    @runner.const('a.b.c.d', 1, 2)
-    def x(z):
-        print(z.a.b)
-
-
-    x()
-    x(params={'a.b.c.d': 1212})
-
-    print(runner.params)
-    print(runner.serialize_state())
