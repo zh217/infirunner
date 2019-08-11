@@ -18,18 +18,17 @@ from contextlib import contextmanager
 from torch.utils.tensorboard import SummaryWriter
 
 DEBUG_MODE = 'debug'
-MANUAL_MODE = 'manual'
+TRAIN_MODE = 'train'
 TURBO_MODE = 'turbo'
 
 
 class RunnerCapsule:
-    def __init__(self, mode, turbo_index, save_path, trial_id,
-                 budget_start=0, budget_end=sys.maxsize):
+    def __init__(self, mode, turbo_index, exp_path, trial_id, budget_start, budget_end):
         self.param = infirunner.param.ParamGenerator(self)
         self.params = {}
         self.turbo_index = turbo_index
         self.initialized = False
-        self.save_path = save_path
+        self.exp_path = exp_path
         self.trial_id = trial_id
         self._param_wrappers = {}
         self._tb_writer = None
@@ -43,6 +42,15 @@ class RunnerCapsule:
         self.start_time = time.time()
         self.budget_current = self.budget_start = budget_start
         self.budget_end = budget_end
+        self.metric = None
+
+    @property
+    def param_gen(self):
+        return self._param_wrappers
+
+    @property
+    def save_path(self):
+        return os.path.join(self.exp_path, self.trial_id)
 
     def is_leader(self):
         return self.turbo_index == 0
@@ -50,14 +58,14 @@ class RunnerCapsule:
     def is_debug(self):
         return self.mode == DEBUG_MODE
 
-    def is_manual(self):
-        return self.mode == MANUAL_MODE
+    def is_train(self):
+        return self.mode == TRAIN_MODE
 
     def is_turbo(self):
         return self.mode == TURBO_MODE
 
     def set_mode(self, mode):
-        assert mode in (DEBUG_MODE, MANUAL_MODE, TURBO_MODE)
+        assert mode in (DEBUG_MODE, TRAIN_MODE, TURBO_MODE)
         self.mode = mode
         if self.mode == DEBUG_MODE:
             self.restore_io()
@@ -111,14 +119,13 @@ class RunnerCapsule:
                 source = inspect.getsource(m)
             except OSError:
                 continue
+            except TypeError:
+                continue
             m_comps = k.split('.')
             source_save_path = os.path.join(source_dir, *m_comps[:-1])
             os.makedirs(source_save_path, exist_ok=True)
             with open(os.path.join(source_save_path, m_comps[-1] + '.py'), 'w', encoding='utf-8') as f:
                 f.write(source)
-
-        with open(os.path.join(source_dir, 'state.json'), 'w') as f:
-            json.dump(self.serialize_state(), f, ensure_ascii=False, indent=2, allow_nan=True)
 
     def set_state_getter(self, model_state_getter, metadata_state_getter):
         self.get_model_state = model_state_getter
@@ -138,6 +145,7 @@ class RunnerCapsule:
             'relative_time': self.prev_time + now - self.start_time,
             'mode': self.mode,
             'steps': self.steps,
+            'metric': self.metric,
             'params': self.params,
             'param_gens': self.serialize_param_gen()
         }
@@ -203,19 +211,20 @@ class RunnerCapsule:
 
     def report_metric(self, metric, save_state=True, consume_budget=1):
         self.budget_current += consume_budget
+        self.metric = metric
         with open(os.path.join(self.save_path, 'metric.tsv'), 'a', encoding='utf-8') as f:
             f.write(f'{self.budget_current}\t{time.time()}\t{metric}\n')
         if save_state:
-            self.save_state(metric)
+            self.save_state()
         if self.budget_current >= self.budget_end:
             if self._tb_writer is not None:
                 self._tb_writer.close()
             sys.exit()
 
-    def save_state(self, metric):
+    def save_state(self):
         if self.turbo_index != 0:
             return
-        out_dir = os.path.join(self.save_path, 'saves', f'{self.steps:015}_{metric:.5f}')
+        out_dir = os.path.join(self.save_path, 'saves', f'{self.budget_current:05}')
         os.makedirs(out_dir, exist_ok=True)
         with open(os.path.join(out_dir, 'state.json'), 'w') as f:
             json.dump(self.serialize_state(), f, ensure_ascii=False, indent=2, allow_nan=True)
@@ -232,7 +241,7 @@ class RunnerCapsule:
             with open(os.path.join(load_path, 'state.json'), 'r') as f:
                 meta = json.load(f)
                 self.steps = meta['steps']
-                self.prev_time = meta['cur_time']
+                self.prev_time = meta['relative_time']
                 self.params = meta['params']
         except FileNotFoundError:
             pass
@@ -256,12 +265,19 @@ class RunnerCapsule:
             self._tb_writer = SummaryWriter(log_dir=self.save_path)
         return self._tb_writer
 
+    def gen_params(self, use_default=False, skip_const=False):
+        new_params = {}
+        for k, w in self._param_wrappers.items():
+            if skip_const and type(w) == infirunner.param.ConstParam:
+                continue
+            new_params[k] = w.default if use_default else w.get_next_value()
+        return new_params
+
     def initialize(self):
         if not self.initialized:
             self.initialized = True
-            for k, w in self._param_wrappers.items():
-                if k not in self.params:
-                    self.params[k] = w.default if self.mode == DEBUG_MODE else w.get_next_value()
+            self.params.update(self.gen_params(use_default=self.mode == DEBUG_MODE,
+                                               skip_const=False))
 
     @contextmanager
     def deterministically_stochastic(self):
@@ -291,10 +307,11 @@ class RunnerCapsule:
             torch.cuda.manual_seed(seed)
         return old_cuda_state, old_np_state, old_state, old_th_state
 
-    def load(self, load_path=None):
+    def load(self, load_budget=None, initialize=True):
         if self.initialized:
             raise RuntimeError('Cannot call load after initialization')
-        if load_path is None:
+        load_path = None
+        if load_budget is None:
             try:
                 saves = os.listdir(os.path.join(self.save_path, 'saves'))
                 if saves:
@@ -302,7 +319,10 @@ class RunnerCapsule:
                     load_path = os.path.join(self.save_path, 'saves', saves[-1])
             except FileNotFoundError:
                 pass
-        self.initialize()
+        else:
+            load_path = os.path.join(self.save_path, 'saves', f'{load_budget:05}')
+        if initialize:
+            self.initialize()
         return self.load_state(load_path)
 
 
@@ -323,28 +343,37 @@ class DynamicStateGetter:
         return ret
 
 
+def make_trial_id():
+    rd_id = ''.join(random.choice(string.ascii_letters) for _ in range(6))
+    trial_id = f'{datetime.datetime.now():%y%m%d_%H%M%S}_{rd_id}'
+    return trial_id
+
+
+active_capsule = None
+
+
 def make_capsule():
     exp_path = os.environ.get('INFR_EXP_PATH')
     if exp_path is None:
         exp_path = os.path.join(os.getcwd(), '_infirunner')
 
     mode = os.environ.get('INFR_MODE')
-    assert mode is None or mode in (MANUAL_MODE, TURBO_MODE)
+    assert mode is None or mode in (TRAIN_MODE, TURBO_MODE)
     if mode is None:
         mode = DEBUG_MODE
     turbo_index = int(os.environ.get('INFR_TURBO_INDEX', '0'))
     trial_id = os.environ.get('INFR_TRIAL_ID')
     if trial_id is None:
-        rd_id = ''.join(random.choice(string.ascii_letters) for _ in range(6))
-        trial_id = f'{datetime.datetime.now():%y%m%d_%H%M%S}_{rd_id}'
+        trial_id = make_trial_id()
     budget_str = os.environ.get('INFR_BUDGET')
     if budget_str is not None:
         budget_start, budget_end = budget_str.split(',')
-        budget_start = float(budget_start)
-        budget_end = float(budget_end)
+        budget_start = int(budget_start)
+        budget_end = int(budget_end)
     else:
-        budget_start = 0.
+        budget_start = 0
         budget_end = sys.maxsize
-    save_path = os.path.join(exp_path, trial_id)
-    _cap = RunnerCapsule(mode, turbo_index, save_path, trial_id, budget_start, budget_end)
+    _cap = RunnerCapsule(mode, turbo_index, exp_path, trial_id, budget_start, budget_end)
+    global active_capsule
+    active_capsule = _cap
     return _cap
