@@ -1,4 +1,3 @@
-import functools
 import os
 import random
 import string
@@ -10,343 +9,23 @@ import inspect
 import shutil
 
 import torch
+import infirunner.steppers
+import infirunner.param
 
 import numpy as np
 
 from contextlib import contextmanager
-from abc import ABC, abstractmethod
-from box import Box
 from torch.utils.tensorboard import SummaryWriter
 
-
-class RunningAverage:
-    def __init__(self, capsule, key):
-        self.key = key
-        self.capsule = capsule
-        self.count = 0
-        self.sum = 0
-
-    def update(self, *values):
-        for value in values:
-            self.count += 1
-            self.sum += value
-
-    def get(self):
-        if self.count == 0:
-            return 0
-        else:
-            return self.sum / self.count
-
-    def reset(self):
-        avg = self.get()
-        self.count = 0
-        self.sum = 0
-        return avg
-
-    def write_to_log(self, flush=False):
-        if self.capsule.is_leader():
-            self.capsule.log_scalar(self.key, self.get())
-        if flush:
-            self.reset()
-
-    def write_to_tb(self, flush=True):
-        if self.capsule.is_leader():
-            writer = self.capsule.get_tb_writer()
-            writer.add_scalar(self.key, self.get(), self.capsule.steps)
-        if flush:
-            self.reset()
-
-
-class Timer:
-    def __init__(self, timeout):
-        self.last_time = time.time()
-        self.timeout = timeout
-
-    def reset(self):
-        self.last_time = time.time()
-
-    def ticked(self):
-        now = time.time()
-        if now - self.last_time > self.timeout:
-            self.last_time = now
-            return True
-        else:
-            return False
-
-
-class StepCounter:
-    def __init__(self, steps):
-        self.steps = steps
-        self.n = 0
-
-    def reset(self):
-        self.n = 0
-
-    def ticked(self):
-        self.n += 1
-        if self.n == self.steps:
-            self.n = 0
-            return True
-        else:
-            return False
-
-
-class Param(ABC):
-    def __init__(self, capsule, key, default):
-        self._capsule = capsule
-        self._key = key
-        self.default = default
-
-    @abstractmethod
-    def get_next_value(self):
-        pass
-
-    @abstractmethod
-    def serialize_as_nni(self):
-        pass
-
-    def serialize(self):
-        ret = {}
-        for k, v in self.__dict__.items():
-            if k and k[0] != '_':
-                ret[k] = v
-        return ret
-
-    def __call__(self, f):
-        if inspect.ismethod(f) or f.__name__ == '__init__':
-            @functools.wraps(f)
-            def wrapper(this, params=None, **kwargs):
-                if not self._capsule.initialized:
-                    raise RuntimeError('Must initialize capsule before use')
-                params = self._process_params(params)
-                return f(this, params, **kwargs)
-        else:
-            @functools.wraps(f)
-            def wrapper(params=None, **kwargs):
-                if not self._capsule.initialized:
-                    raise RuntimeError('Must initialize capsule before use')
-                params = self._process_params(params)
-
-                return f(params, **kwargs)
-
-        return wrapper
-
-    def _process_params(self, params):
-        _params = params
-        if not isinstance(_params, Box):
-            params = Box(default_box=True)
-        else:
-            params = _params
-        if _params is not None:
-            for ks, v in _params.items():
-                ks = ks.split('.')
-                cur = params
-                for k in ks[:-1]:
-                    cur = cur[k]
-                cur[ks[-1]] = v
-        cur = params
-        ks = self._key.split('.')
-        for k in ks[:-1]:
-            cur = cur[k]
-        if ks[-1] not in cur:
-            cur[ks[-1]] = self._capsule.params[self._key]
-        return params
-
-    def __repr__(self):
-        repr_str = f'<{self.__class__.__name__}'
-        for k, v in self.serialize().items():
-            repr_str += f' {k}={repr(v)}'
-        repr_str += '>'
-        return repr_str
-
-
-class ConstParam(Param):
-    def __init__(self, capsule, key, default, const):
-        super().__init__(capsule, key, default)
-        self.const = const
-
-    def get_next_value(self):
-        return self.const
-
-    def serialize_as_nni(self):
-        return None
-
-
-class ChoiceParam(Param):
-    def __init__(self, capsule, key, default, choices, prob=None):
-        super().__init__(capsule, key, default)
-        self.choices = choices
-        self.prob = prob
-
-    def get_next_value(self):
-        return np.random.choice(self.choices, p=self.prob)
-
-    def serialize_as_nni(self):
-        return {
-            '_type': 'choice',
-            '_value': self.choices
-        }
-
-
-class RandomIntParam(Param):
-    def __init__(self, capsule, key, default, low, high):
-        super().__init__(capsule, key, default)
-        self.low = low
-        self.high = high
-
-    def get_next_value(self):
-        return np.random.randint(self.low, self.high)
-
-    def serialize_as_nni(self):
-        return {
-            '_type': 'randint',
-            '_value': [self.low, self.high]
-        }
-
-
-class UniformParam(Param):
-    def __init__(self, capsule, key, default, low, high):
-        super().__init__(capsule, key, default)
-        self.low = low
-        self.high = high
-
-    def get_next_value(self):
-        return np.random.uniform(self.low, self.high)
-
-    def serialize_as_nni(self):
-        return {
-            '_type': 'uniform',
-            '_value': [self.low, self.high]
-        }
-
-
-def _clip(val, q, low, high):
-    return np.clip(np.round(val / q) * q, low, high)
-
-
-class QUniformParam(Param):
-    def __init__(self, capsule, key, default, low, high, q):
-        super().__init__(capsule, key, default)
-        self.low = low
-        self.high = high
-        self.q = q
-
-    def get_next_value(self):
-        return _clip(random.uniform(self.low, self.high), self.q, self.low, self.high)
-
-    def serialize_as_nni(self):
-        return {
-            '_type': 'quniform',
-            '_value': [self.low, self.high, self.q]
-        }
-
-
-class LogUniformParam(Param):
-    def __init__(self, capsule, key, default, low, high):
-        super().__init__(capsule, key, default)
-        self.low = low
-        self.high = high
-
-    def get_next_value(self):
-        return np.exp(np.random.uniform(np.log(self.low), np.log(self.high)))
-
-    def serialize_as_nni(self):
-        return {
-            '_type': 'loguniform',
-            '_value': [self.low, self.high]
-        }
-
-
-class QLogUniformParam(Param):
-    def __init__(self, capsule, key, default, low, high, q):
-        super().__init__(capsule, key, default)
-        self.low = low
-        self.high = high
-        self.q = q
-
-    def get_next_value(self):
-        return _clip(np.exp(np.random.uniform(np.log(self.low), np.log(self.high))), self.q, self.low, self.high)
-
-    def serialize_as_nni(self):
-        return {
-            '_type': 'qloguniform',
-            '_value': [self.low, self.high, self.q]
-        }
-
-
-class NormalParam(Param):
-    def __init__(self, capsule, key, default, mean, std):
-        super().__init__(capsule, key, default)
-        self.mean = mean
-        self.std = std
-
-    def get_next_value(self):
-        return np.random.normal(self.mean, self.std)
-
-    def serialize_as_nni(self):
-        return {
-            '_type': 'normal',
-            '_value': [self.mean, self.std]
-        }
-
-
-class QNormalParam(Param):
-    def __init__(self, capsule, key, default, mean, std, q):
-        super().__init__(capsule, key, default)
-        self.mean = mean
-        self.std = std
-        self.q = q
-
-    def get_next_value(self):
-        return np.round(np.random.normal(self.mean, self.std) / self.q) * self.q
-
-    def serialize_as_nni(self):
-        return {
-            '_type': 'qnormal',
-            '_value': [self.mean, self.std, self.q]
-        }
-
-
-class LogNormalParam(Param):
-    def __init__(self, capsule, key, default, mean, std):
-        super().__init__(capsule, key, default)
-        self.mean = mean
-        self.std = std
-
-    def get_next_value(self):
-        return np.exp(np.random.normal(self.mean, self.std))
-
-    def serialize_as_nni(self):
-        return {
-            '_type': 'lognormal',
-            '_value': [self.mean, self.std]
-        }
-
-
-class QLogNormalParam(Param):
-    def __init__(self, capsule, key, default, mean, std, q):
-        super().__init__(capsule, key, default)
-        self.mean = mean
-        self.std = std
-        self.q = q
-
-    def get_next_value(self):
-        return np.round(np.exp(np.random.normal(self.mean, self.std)) / self.q) * self.q
-
-    def serialize_as_nni(self):
-        return {
-            '_type': 'qlognormal',
-            '_value': [self.mean, self.std, self.q]
-        }
-
-
-DEBUG_MODE = 'debug_mode'
-SEARCH_MODE = 'search_mode'
-TURBO_MODE = 'turbo_mode'
+DEBUG_MODE = 'debug'
+MANUAL_MODE = 'manual'
+TURBO_MODE = 'turbo'
 
 
 class RunnerCapsule:
-    def __init__(self, mode, turbo_index, save_path, trial_id, steps):
+    def __init__(self, mode, turbo_index, save_path, trial_id,
+                 budget_start=0, budget_end=sys.maxsize):
+        self.param = infirunner.param.ParamGenerator(self)
         self.params = {}
         self.turbo_index = turbo_index
         self.initialized = False
@@ -354,38 +33,31 @@ class RunnerCapsule:
         self.trial_id = trial_id
         self._param_wrappers = {}
         self._tb_writer = None
-        self.steps = steps
+        self.steps = 0
         self.log_files = {}
-        self.metric = None
         self.get_model_state = None
         self.get_metadata_state = None
         self.stdout = self.stderr = self.orig_stdout = self.orig_stderr = None
         self.mode = self.set_mode(mode)
         self.prev_time = 0
         self.start_time = time.time()
+        self.budget_current = self.budget_start = budget_start
+        self.budget_end = budget_end
 
     def is_leader(self):
         return self.turbo_index == 0
 
-    def serialize_param_gen_as_nni(self):
-        ret = {}
-        for k, v in self._param_wrappers.items():
-            serialized = v.serialize_as_nni()
-            if serialized:
-                ret[k] = serialized
-        return ret
-
     def is_debug(self):
         return self.mode == DEBUG_MODE
 
-    def is_search(self):
-        return self.mode == SEARCH_MODE
+    def is_manual(self):
+        return self.mode == MANUAL_MODE
 
     def is_turbo(self):
         return self.mode == TURBO_MODE
 
     def set_mode(self, mode):
-        assert mode in (DEBUG_MODE, SEARCH_MODE, TURBO_MODE)
+        assert mode in (DEBUG_MODE, MANUAL_MODE, TURBO_MODE)
         self.mode = mode
         if self.mode == DEBUG_MODE:
             self.restore_io()
@@ -418,7 +90,6 @@ class RunnerCapsule:
         del self.stderr
 
     def save_sources(self, white_list=None):
-        self.load()
         if not self.is_leader():
             return
 
@@ -456,6 +127,9 @@ class RunnerCapsule:
     def serialize_state(self):
         now = time.time()
         return {
+            'budget_start': self.budget_start,
+            'budget_end': self.budget_end,
+            'budget_current': self.budget_current,
             'save_path': self.save_path,
             'trial_id': self.trial_id,
             'prev_time': self.prev_time,
@@ -463,14 +137,13 @@ class RunnerCapsule:
             'cur_time': now,
             'relative_time': self.prev_time + now - self.start_time,
             'mode': self.mode,
-            'metric': self.metric,
             'steps': self.steps,
             'params': self.params,
             'param_gens': self.serialize_param_gen()
         }
 
     def running_average(self, key):
-        return RunningAverage(self, key)
+        return infirunner.steppers.RunningAverage(self, key)
 
     def step(self, size=1):
         self.steps += size
@@ -513,39 +186,6 @@ class RunnerCapsule:
         with open(os.path.join(p, f'{self.steps:015}.{ext}', 'wb')) as file:
             file.write(data)
 
-    def const(self, key, default, value):
-        return self._make_param_wrapper(key, ConstParam(self, key, default, value))
-
-    def choice(self, key, default, choices, prob=None):
-        return self._make_param_wrapper(key, ChoiceParam(self, key, default, choices, prob))
-
-    def randint(self, key, default, low, high):
-        return self._make_param_wrapper(key, RandomIntParam(self, key, default, low, high))
-
-    def unif(self, key, default, low, high):
-        return self._make_param_wrapper(key, UniformParam(self, key, default, low, high))
-
-    def qunif(self, key, default, low, high, q):
-        return self._make_param_wrapper(key, QUniformParam(self, key, default, low, high, q))
-
-    def logunif(self, key, default, low, high):
-        return self._make_param_wrapper(key, LogUniformParam(self, key, default, low, high))
-
-    def qlogunif(self, key, default, low, high, q):
-        return self._make_param_wrapper(key, QLogUniformParam(self, key, default, low, high, q))
-
-    def normal(self, key, default, mean, std):
-        return self._make_param_wrapper(key, NormalParam(self, key, default, mean, std))
-
-    def qnormal(self, key, default, mean, std, q):
-        return self._make_param_wrapper(key, QNormalParam(self, key, default, mean, std, q))
-
-    def lognormal(self, key, default, mean, std):
-        return self._make_param_wrapper(key, LogNormalParam(self, key, default, mean, std))
-
-    def qlognormal(self, key, default, mean, std, q):
-        return self._make_param_wrapper(key, QLogNormalParam(self, key, default, mean, std, q))
-
     def serialize_param_gen(self):
         ret = {}
         for k, v in self._param_wrappers.items():
@@ -557,27 +197,24 @@ class RunnerCapsule:
         if self.initialized:
             raise RuntimeError('Cannot produce/set parameters after it is used')
 
-    def _make_param_wrapper(self, key, param_wrapper):
-        self._guard_params()
-        if key in self._param_wrappers:
-            raise ValueError('duplicate parameter key', key)
-        self._param_wrappers[key] = param_wrapper
-        return param_wrapper
-
     def set_params(self, param_map):
         self._guard_params()
         self.params.update(param_map)
 
-    def set_metric(self, metric):
-        self.metric = metric
+    def report_metric(self, metric, save_state=True, consume_budget=1):
+        self.budget_current += consume_budget
+        with open(os.path.join(self.save_path, 'metric.tsv'), 'a', encoding='utf-8') as f:
+            f.write(f'{self.budget_current}\t{time.time()}\t{metric}\n')
+        if save_state:
+            self.save_state(metric)
+        if self.budget_current >= self.budget_end:
+            if self._tb_writer is not None:
+                self._tb_writer.close()
+            sys.exit()
 
-    def save_state(self):
+    def save_state(self, metric):
         if self.turbo_index != 0:
             return
-        if self.metric is None:
-            metric = 0.
-        else:
-            metric = self.metric
         out_dir = os.path.join(self.save_path, 'saves', f'{self.steps:015}_{metric:.5f}')
         os.makedirs(out_dir, exist_ok=True)
         with open(os.path.join(out_dir, 'state.json'), 'w') as f:
@@ -589,11 +226,13 @@ class RunnerCapsule:
             torch.save(self.get_model_state(), os.path.join(out_dir, 'model.pt'))
 
     def load_state(self, load_path):
+        if load_path is None:
+            return None, None
         try:
             with open(os.path.join(load_path, 'state.json'), 'r') as f:
                 meta = json.load(f)
                 self.steps = meta['steps']
-                self.metric = meta['metric']
+                self.prev_time = meta['cur_time']
                 self.params = meta['params']
         except FileNotFoundError:
             pass
@@ -654,7 +293,7 @@ class RunnerCapsule:
 
     def load(self, load_path=None):
         if self.initialized:
-            return
+            raise RuntimeError('Cannot call load after initialization')
         if load_path is None:
             try:
                 saves = os.listdir(os.path.join(self.save_path, 'saves'))
@@ -663,9 +302,8 @@ class RunnerCapsule:
                     load_path = os.path.join(self.save_path, 'saves', saves[-1])
             except FileNotFoundError:
                 pass
-        if load_path is not None:
-            self.load_state(load_path)
         self.initialize()
+        return self.load_state(load_path)
 
 
 class DynamicStateGetter:
@@ -686,18 +324,27 @@ class DynamicStateGetter:
 
 
 def make_capsule():
-    exp_path = os.environ.get('INFIRUNNER_EXP_PATH')
+    exp_path = os.environ.get('INFR_EXP_PATH')
     if exp_path is None:
         exp_path = os.path.join(os.getcwd(), '_infirunner')
 
-    mode = os.environ.get('INFIRUNNER_MODE', DEBUG_MODE)
-    assert mode in (DEBUG_MODE, SEARCH_MODE, TURBO_MODE)
-    turbo_index = int(os.environ.get('INFIRUNNER_TURBO_INDEX', '0'))
-    trial_id = os.environ.get('INFIRUNNER_TRIAL_ID', None)
+    mode = os.environ.get('INFR_MODE')
+    assert mode is None or mode in (MANUAL_MODE, TURBO_MODE)
+    if mode is None:
+        mode = DEBUG_MODE
+    turbo_index = int(os.environ.get('INFR_TURBO_INDEX', '0'))
+    trial_id = os.environ.get('INFR_TRIAL_ID')
     if trial_id is None:
         rd_id = ''.join(random.choice(string.ascii_letters) for _ in range(6))
         trial_id = f'{datetime.datetime.now():%y%m%d_%H%M%S}_{rd_id}'
+    budget_str = os.environ.get('INFR_BUDGET')
+    if budget_str is not None:
+        budget_start, budget_end = budget_str.split(',')
+        budget_start = float(budget_start)
+        budget_end = float(budget_end)
+    else:
+        budget_start = 0.
+        budget_end = sys.maxsize
     save_path = os.path.join(exp_path, trial_id)
-    steps = int(os.environ.get('INFIRUNNER_TURBO_INDEX', '0'))
-    _cap = RunnerCapsule(mode, turbo_index, save_path, trial_id, steps)
+    _cap = RunnerCapsule(mode, turbo_index, save_path, trial_id, budget_start, budget_end)
     return _cap
