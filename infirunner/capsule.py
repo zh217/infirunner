@@ -237,14 +237,12 @@ class RunnerCapsule:
     def load_state(self, load_path):
         if load_path is None:
             return None, None
-        try:
-            with open(os.path.join(load_path, 'state.json'), 'r') as f:
-                meta = json.load(f)
-                self.steps = meta['steps']
-                self.prev_time = meta['relative_time']
-                self.params = meta['params']
-        except FileNotFoundError:
-            pass
+        print('loading saved states from', load_path)
+        with open(os.path.join(load_path, 'state.json'), 'r') as f:
+            meta = json.load(f)
+            self.steps = meta['steps']
+            self.prev_time = meta['relative_time']
+            self.params = meta['params']
 
         try:
             with open(os.path.join(load_path, 'metadata.json'), 'r') as f:
@@ -310,17 +308,12 @@ class RunnerCapsule:
     def load(self, load_budget=None, initialize=True):
         if self.initialized:
             raise RuntimeError('Cannot call load after initialization')
-        load_path = None
         if load_budget is None:
-            try:
-                saves = os.listdir(os.path.join(self.save_path, 'saves'))
-                if saves:
-                    saves.sort()
-                    load_path = os.path.join(self.save_path, 'saves', saves[-1])
-            except FileNotFoundError:
-                pass
-        else:
+            load_budget = self.budget_start
+        if load_budget > 0:
             load_path = os.path.join(self.save_path, 'saves', f'{load_budget:05}')
+        else:
+            load_path = None
         if initialize:
             self.initialize()
         return self.load_state(load_path)
@@ -362,7 +355,7 @@ def make_capsule():
     if mode is None:
         mode = DEBUG_MODE
     turbo_index = int(os.environ.get('INFR_TURBO_INDEX', '0'))
-    trial_id = os.environ.get('INFR_TRIAL_ID')
+    trial_id = os.environ.get('INFR_TRIAL')
     if trial_id is None:
         trial_id = make_trial_id()
     budget_str = os.environ.get('INFR_BUDGET')
