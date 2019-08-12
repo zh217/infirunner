@@ -95,7 +95,7 @@ class ChoiceParam(Param):
         self.prob = prob
 
     def get_next_value(self):
-        return np.random.choice(self.choices, p=self.prob)
+        return random.choices(self.choices, weights=self.prob, k=1)[0]
 
     def serialize_as_nni(self):
         return {
@@ -111,13 +111,14 @@ class OrderedParam(Param):
         self.prob = prob
 
     def get_next_value(self):
-        return np.random.choice(self.choices, p=self.prob)
+        return random.choices(self.choices, weights=self.prob, k=1)[0]
 
     def serialize_as_nni(self):
         return {
             '_type': 'choice',
             '_value': self.choices
         }
+
 
 class RandomIntParam(Param):
     def __init__(self, capsule, key, default, low, high):

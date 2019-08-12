@@ -46,11 +46,11 @@ class Generator:
 @click.argument('module', required=True)
 def run(module):
     gen = Generator(module)
-    gen.save_start_state(params={'fuck': 1})
+    gen.save_start_state(end_budget=1)
     gen.change_capsule_trial_id()
-    gen.save_start_state(params={'fuck': 2})
+    gen.save_start_state(end_budget=2)
     gen.change_capsule_trial_id()
-    gen.save_start_state(params={'fuck': 3})
+    gen.save_start_state(end_budget=3)
 
 
 if __name__ == '__main__':

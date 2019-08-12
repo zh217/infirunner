@@ -23,9 +23,9 @@ TURBO_MODE = 'turbo'
 
 
 class RunnerCapsule:
-    def __init__(self, mode, turbo_index, exp_path, trial_id, budget_start, budget_end):
+    def __init__(self, mode, turbo_index, exp_path, trial_id, budget_start, budget_end, start_params):
         self.param = infirunner.param.ParamGenerator(self)
-        self.params = {}
+        self.params = start_params or {}
         self.turbo_index = turbo_index
         self.initialized = False
         self.exp_path = exp_path
@@ -67,13 +67,10 @@ class RunnerCapsule:
     def set_mode(self, mode):
         assert mode in (DEBUG_MODE, TRAIN_MODE, TURBO_MODE)
         self.mode = mode
-        if self.mode == DEBUG_MODE:
-            self.restore_io()
-        else:
-            self.redirect_io()
         return mode
 
     def redirect_io(self):
+        os.makedirs(self.save_path, exist_ok=True)
         stdout_file = os.path.join(self.save_path, f'std_out_{self.turbo_index}.log')
         stderr_file = os.path.join(self.save_path, f'std_err_{self.turbo_index}.log')
         self.orig_stdout = sys.stdout
@@ -234,7 +231,7 @@ class RunnerCapsule:
         if self.get_model_state:
             torch.save(self.get_model_state(), os.path.join(out_dir, 'model.pt'))
 
-    def load_state(self, load_path):
+    def load_state(self, load_path, override_params=True):
         if load_path is None:
             return None, None
         print('loading saved states from', load_path)
@@ -242,7 +239,8 @@ class RunnerCapsule:
             meta = json.load(f)
             self.steps = meta['steps']
             self.prev_time = meta['relative_time']
-            self.params = meta['params']
+            if override_params:
+                self.params = meta['params']
 
         try:
             with open(os.path.join(load_path, 'metadata.json'), 'r') as f:
@@ -351,22 +349,32 @@ def make_capsule():
         exp_path = os.path.join(os.getcwd(), '_infirunner')
 
     mode = os.environ.get('INFR_MODE')
-    assert mode is None or mode in (TRAIN_MODE, TURBO_MODE)
+    assert mode is None or mode in (DEBUG_MODE, TRAIN_MODE, TURBO_MODE)
     if mode is None:
         mode = DEBUG_MODE
     turbo_index = int(os.environ.get('INFR_TURBO_INDEX', '0'))
     trial_id = os.environ.get('INFR_TRIAL')
     if trial_id is None:
         trial_id = make_trial_id()
+    start_state_str = os.environ.get('INFR_START_STATE')
+    if start_state_str:
+        with open(start_state_str, 'r', encoding='utf-8') as f:
+            start_obj = json.load(f)
+            budget_start = start_obj['start_budget']
+            budget_end = start_obj['end_budget']
+            start_params = start_obj['params']
+    else:
+        budget_start = 0
+        budget_end = sys.maxsize
+        start_params = {}
     budget_str = os.environ.get('INFR_BUDGET')
     if budget_str is not None:
         budget_start, budget_end = budget_str.split(',')
         budget_start = int(budget_start)
         budget_end = int(budget_end)
-    else:
-        budget_start = 0
-        budget_end = sys.maxsize
-    _cap = RunnerCapsule(mode, turbo_index, exp_path, trial_id, budget_start, budget_end)
+    _cap = RunnerCapsule(mode, turbo_index, exp_path, trial_id, budget_start, budget_end, start_params)
+    if os.environ.get('INFR_REDIRECT_IO'):
+        _cap.redirect_io()
     global active_capsule
     active_capsule = _cap
     return _cap
