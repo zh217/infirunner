@@ -74,12 +74,32 @@ class Supervisor:
         self.active_procs = []
         self.last_pending_count = 0
         self.last_active_count = 0
+        self.last_slots = 0
+        self.slots_file_path = os.path.join(experiment_dir, f'slots_{socket.getfqdn()}')
+        os.makedirs(experiment_dir, exist_ok=True)
+        if os.path.exists(self.slots_file_path):
+            raise RuntimeError('Conflicting slots file at', self.slots_file_path)
+        self.slots_file = open(self.slots_file_path, 'w')
 
     def print_log(self, *args):
         print(Fore.LIGHTBLACK_EX + f'[{datetime.datetime.now()}]' + Style.RESET_ALL, *args, file=sys.stderr)
 
+    def update_available_slots(self, n):
+        slots_file = self.slots_file
+        slots_file.seek(0)
+        slots_file.write(f'{n}')
+        slots_file.truncate()
+
     def cleanup(self):
         self.check_completed_procs()
+        try:
+            self.slots_file.close()
+        except:
+            pass
+        try:
+            os.unlink(self.slots_file_path)
+        except:
+            pass
         for proc_info in self.active_procs:
             proc_info['proc'].kill()
 
@@ -116,6 +136,7 @@ class Supervisor:
     def supervise(self):
         self.check_completed_procs()
 
+        available_gpus = self.get_available_gpus(sys.maxsize)
         trials = []
         for parent, dir, files in os.walk(self.experiment_dir):
             trials = [os.path.join(parent, p) for p in dir]
@@ -123,19 +144,23 @@ class Supervisor:
         result = [get_trial_info(p, load_start_state=True) for p in trials]
         pending = [r for r in result if r['should_start']]
         if pending:
-            available_gpus = self.get_available_gpus(len(pending))
             if (len(pending) != self.last_pending_count
                     or len(self.active_procs) != self.last_active_count
-                    or len(available_gpus)):
+                    or len(available_gpus)
+                    or self.last_slots != len(available_gpus)):
                 if len(available_gpus):
                     self.print_log(
                         Fore.LIGHTBLUE_EX +
-                        f'pending: {len(pending)} active: {len(self.active_procs)} starting: {len(available_gpus)}' +
+                        f'slots: {len(available_gpus)} pending: {len(pending)} active: {len(self.active_procs)} '
+                        f'starting: {min(len(available_gpus), len(pending))}' +
                         Style.RESET_ALL)
+                    self.update_available_slots(len(available_gpus) - len(pending))
                 else:
                     self.print_log(
                         Fore.LIGHTBLACK_EX +
-                        f'pending: {len(pending)} active: {len(self.active_procs)}' + Style.RESET_ALL)
+                        f'slots: {len(available_gpus)} pending: {len(pending)} active: {len(self.active_procs)}' +
+                        Style.RESET_ALL)
+                    self.update_available_slots(len(available_gpus))
 
             self.last_pending_count = len(pending)
             self.last_active_count = len(self.active_procs)
@@ -144,11 +169,17 @@ class Supervisor:
                 if run_status:
                     self.active_procs.append(run_status)
         else:
-            if len(pending) != self.last_pending_count or len(self.active_procs) != self.last_active_count:
+            if (len(pending) != self.last_pending_count or
+                    len(self.active_procs) != self.last_active_count
+                    or self.last_slots != len(available_gpus)):
                 self.print_log(
-                    Fore.LIGHTBLACK_EX + f'pending: {len(pending)} active: {len(self.active_procs)}' + Style.RESET_ALL)
+                    Fore.LIGHTBLACK_EX +
+                    f'slots: {len(available_gpus)} pending: {len(pending)} active: {len(self.active_procs)}' +
+                    Style.RESET_ALL)
+                self.last_slots = len(available_gpus)
                 self.last_pending_count = len(pending)
                 self.last_active_count = len(self.active_procs)
+                self.update_available_slots(len(available_gpus))
 
     def run_capsule(self, run_info, gpu_idx):
         lock_path = os.path.join(run_info['trial_dir'], 'lock')
