@@ -81,7 +81,7 @@ class Supervisor:
         os.makedirs(experiment_dir, exist_ok=True)
         if os.path.exists(self.slots_file_path):
             raise RuntimeError('Conflicting slots file at', self.slots_file_path)
-        self.slots_file = open(self.slots_file_path, 'w')
+        self.slots_file = open(self.slots_file_path, 'w', encoding='ascii')
 
     def print_log(self, *args):
         print(Fore.LIGHTBLACK_EX + f'[{datetime.datetime.now()}]' + Style.RESET_ALL, *args, file=sys.stderr)
@@ -91,6 +91,7 @@ class Supervisor:
         slots_file.seek(0)
         slots_file.write(f'{n}')
         slots_file.truncate()
+        slots_file.flush()
 
     def cleanup(self):
         self.check_completed_procs()

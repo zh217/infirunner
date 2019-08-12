@@ -164,7 +164,7 @@ class RunnerCapsule:
         log_file = self.log_files.get(key)
         if log_file is None:
             os.makedirs(os.path.join(self.save_path, 'logs'), exist_ok=True)
-            log_file = open(os.path.join(self.save_path, 'logs', f'{key}.tsv'), 'a')
+            log_file = open(os.path.join(self.save_path, 'logs', f'{key}.tsv'), 'a', encoding='utf-8')
         return log_file
 
     def log_scalar(self, key, value):
@@ -209,7 +209,7 @@ class RunnerCapsule:
     def report_metric(self, metric, save_state=True, consume_budget=1):
         self.budget_current += consume_budget
         self.metric = metric
-        with open(os.path.join(self.save_path, 'metric.tsv'), 'a', encoding='utf-8') as f:
+        with open(os.path.join(self.save_path, 'metric.tsv'), 'a', encoding='ascii') as f:
             f.write(f'{self.budget_current}\t{time.time()}\t{metric}\n')
         if save_state:
             self.save_state()
@@ -223,10 +223,10 @@ class RunnerCapsule:
             return
         out_dir = os.path.join(self.save_path, 'saves', f'{self.budget_current:05}')
         os.makedirs(out_dir, exist_ok=True)
-        with open(os.path.join(out_dir, 'state.json'), 'w') as f:
+        with open(os.path.join(out_dir, 'state.json'), 'w', encoding='utf-8') as f:
             json.dump(self.serialize_state(), f, ensure_ascii=False, indent=2, allow_nan=True)
         if self.get_metadata_state:
-            with open(os.path.join(out_dir, 'metadata.json'), 'w') as f:
+            with open(os.path.join(out_dir, 'metadata.json'), 'w', encoding='utf-8') as f:
                 json.dump(self.get_metadata_state(), f, ensure_ascii=False, indent=2, allow_nan=True)
         if self.get_model_state:
             torch.save(self.get_model_state(), os.path.join(out_dir, 'model.pt'))
@@ -235,7 +235,7 @@ class RunnerCapsule:
         if load_path is None:
             return None, None
         print('loading saved states from', load_path)
-        with open(os.path.join(load_path, 'state.json'), 'r') as f:
+        with open(os.path.join(load_path, 'state.json'), 'r', encoding='utf-8') as f:
             meta = json.load(f)
             self.steps = meta['steps']
             self.prev_time = meta['relative_time']
@@ -243,7 +243,7 @@ class RunnerCapsule:
                 self.params = meta['params']
 
         try:
-            with open(os.path.join(load_path, 'metadata.json'), 'r') as f:
+            with open(os.path.join(load_path, 'metadata.json'), 'r', encoding='utf-8') as f:
                 metadata = json.load(f)
         except FileNotFoundError:
             metadata = None
