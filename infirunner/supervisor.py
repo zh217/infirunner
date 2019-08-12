@@ -7,9 +7,12 @@ import GPUtil
 import subprocess
 import socket
 import atexit
-
 import click
+import colorama
+from colorama import Style, Fore, Back
 from flufl.lock import Lock
+
+colorama.init()
 
 
 def get_trial_info(trial_dir, load_start_state=False, load_metric=False):
@@ -73,7 +76,7 @@ class Supervisor:
         self.last_active_count = 0
 
     def print_log(self, *args):
-        print(f'{datetime.datetime.now()}', *args, file=sys.stderr)
+        print(Fore.LIGHTBLACK_EX + f'[{datetime.datetime.now()}]' + Style.RESET_ALL, *args, file=sys.stderr)
 
     def cleanup(self):
         self.check_completed_procs()
@@ -86,8 +89,9 @@ class Supervisor:
         for proc_info in self.active_procs:
             ret_code = proc_info['proc'].poll()
             if ret_code is not None:
-                self.print_log('daemon', proc_info['proc'].pid, 'completed with ret code', ret_code, 'for',
-                               proc_info['trial_id'])
+                self.print_log((Fore.RED if ret_code else Fore.GREEN) + 'daemon', proc_info['proc'].pid,
+                               'completed with ret code', ret_code, 'for',
+                               proc_info['trial_id'], Style.RESET_ALL)
                 proc_info['ret_code'] = ret_code
                 proc_info['lock'].unlock()
                 os.unlink(os.path.join(proc_info['trial_dir'], 'start_state.json'))
@@ -123,8 +127,16 @@ class Supervisor:
             if (len(pending) != self.last_pending_count
                     or len(self.active_procs) != self.last_active_count
                     or len(available_gpus)):
-                self.print_log(
-                    f'pending: {len(pending)} active: {len(self.active_procs)} starting: {len(available_gpus)}')
+                if len(available_gpus):
+                    self.print_log(
+                        Fore.LIGHTBLUE_EX +
+                        f'pending: {len(pending)} active: {len(self.active_procs)} starting: {len(available_gpus)}' +
+                        Style.RESET_ALL)
+                else:
+                    self.print_log(
+                        Fore.LIGHTBLACK_EX +
+                        f'pending: {len(pending)} active: {len(self.active_procs)}' + Style.RESET_ALL)
+
             self.last_pending_count = len(pending)
             self.last_active_count = len(self.active_procs)
             for gpu_idx, run_info in zip(available_gpus, pending):
@@ -133,7 +145,8 @@ class Supervisor:
                     self.active_procs.append(run_status)
         else:
             if len(pending) != self.last_pending_count or len(self.active_procs) != self.last_active_count:
-                self.print_log(f'pending: {len(pending)} active: {len(self.active_procs)}')
+                self.print_log(
+                    Fore.LIGHTBLACK_EX + f'pending: {len(pending)} active: {len(self.active_procs)}' + Style.RESET_ALL)
                 self.last_pending_count = len(pending)
                 self.last_active_count = len(self.active_procs)
 
