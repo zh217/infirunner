@@ -9,6 +9,7 @@ import socket
 import atexit
 import click
 import colorama
+import pprint
 from colorama import Style, Fore, Back
 from flufl.lock import Lock
 
@@ -64,7 +65,7 @@ def get_trial_info(trial_dir, load_start_state=False, load_metric=False):
 
 
 class Supervisor:
-    def __init__(self, experiment_dir, gpu_per_process, poll_interval, exclude_gpus, gpu_max_mem, gpu_max_load):
+    def __init__(self, experiment_dir, gpu_per_process, poll_interval, exclude_gpus, gpu_max_mem, gpu_max_load, mode):
         self.experiment_dir = os.path.abspath(experiment_dir)
         self.exclude_gpus = exclude_gpus
         self.gpu_per_process = gpu_per_process
@@ -75,6 +76,7 @@ class Supervisor:
         self.last_pending_count = 0
         self.last_active_count = 0
         self.last_slots = 0
+        self.mode = mode
         self.slots_file_path = os.path.join(experiment_dir, f'slots_{socket.getfqdn()}')
         os.makedirs(experiment_dir, exist_ok=True)
         if os.path.exists(self.slots_file_path):
@@ -111,7 +113,7 @@ class Supervisor:
             if ret_code is not None:
                 self.print_log((Fore.RED if ret_code else Fore.GREEN) + 'daemon', proc_info['proc'].pid,
                                'completed with ret code', ret_code, 'for',
-                               proc_info['trial_id'], Style.RESET_ALL)
+                               proc_info['trial_id'], self.mode, Style.RESET_ALL)
                 proc_info['ret_code'] = ret_code
                 proc_info['lock'].unlock()
                 os.unlink(os.path.join(proc_info['trial_dir'], 'start_state.json'))
@@ -129,7 +131,7 @@ class Supervisor:
                 'end_at': time.time(),
                 'killed': killed,
                 'trial_id': proc_info['trial_id'],
-                'mode': proc_info['mode']
+                'mode': self.mode
             }, ensure_ascii=False))
             logfile.write('\n')
 
@@ -191,23 +193,19 @@ class Supervisor:
 
         # run capsule
 
-        infr_mode = os.environ.get('INFR_MODE', 'train')
-        assert infr_mode in ('train', 'debug', 'turbo')
-
         proc = subprocess.Popen([sys.executable, '-m', run_info['start_state']['module_name']],
                                 env={'CUDA_VISIBLE_DEVICES': str(gpu_idx),
                                      'INFR_TRIAL': run_info['trial_id'],
                                      'INFR_EXP_PATH': self.experiment_dir,
-                                     'INFR_MODE': infr_mode,
+                                     'INFR_MODE': self.mode,
                                      'INFR_REDIRECT_IO': '1',
                                      'INFR_START_STATE': os.path.join(run_info['trial_dir'], 'start_state.json')})
 
-        self.print_log('started daemon', proc.pid, 'for', run_info['trial_id'])
+        self.print_log('started daemon', proc.pid, 'for', run_info['trial_id'], self.mode)
 
         return {'trial_dir': run_info['trial_dir'],
                 'trial_id': run_info['trial_id'],
                 'start_at': time.time(),
-                'mode': infr_mode,
                 'lock': lock,
                 'gpu_idx': gpu_idx,
                 'proc': proc,
@@ -227,26 +225,29 @@ class Supervisor:
         while True:
             try:
                 self.supervise()
-                time.sleep(1)
+                time.sleep(self.poll_interval)
             except KeyboardInterrupt:
                 self.print_log('Received stop signal, exiting')
                 break
 
 
 @click.command()
-@click.option('--poll-interval', type=int, default=10)
+@click.option('--poll-interval', type=int, default=5)
 @click.option('--exclude-gpus', default='')
 @click.option('--gpu-per-process', type=int, default=1)
 @click.option('--gpu-max-mem', type=float, default=0.05)
 @click.option('--gpu-max-load', type=float, default=0.1)
+@click.option('--mode', type=click.Choice(['train', 'debug', 'turbo']), default='train')
 @click.argument('folder', required=True)
-def run(folder, exclude_gpus, gpu_per_process, poll_interval, gpu_max_mem, gpu_max_load):
+def run(folder, exclude_gpus, gpu_per_process, poll_interval, gpu_max_mem, gpu_max_load, mode):
+    pprint.pprint(locals(), stream=sys.stderr)
     supervisor = Supervisor(folder,
                             gpu_per_process=gpu_per_process,
                             poll_interval=poll_interval,
                             exclude_gpus=[int(idx) for idx in exclude_gpus.split(',')] if exclude_gpus else [],
                             gpu_max_mem=gpu_max_mem,
-                            gpu_max_load=gpu_max_load)
+                            gpu_max_load=gpu_max_load,
+                            mode=mode)
     supervisor.start()
 
 
