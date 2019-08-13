@@ -209,7 +209,16 @@ class HyperbandDriver:
                 new_trial = self.get_next_hyperband_trial()
                 if new_trial is not None:
                     # launch new trial
+                    # add to trials being watched
                     pass
+
+            completed_trials = set()
+            for trial in self.watch_active_trials:
+                # check if completed
+                # if completed, add to completed_trials, and report back to the corresponding hyperbands
+                pass
+
+            self.watch_active_trials[:] = [t for t in self.watch_active_trials if t not in completed_trials]
 
             time.sleep(self.sleep_interval)
 
