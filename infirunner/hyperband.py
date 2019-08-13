@@ -183,7 +183,7 @@ class HyperbandDriver:
         return new_id
 
     def get_next_hyperband_trial(self):
-        for hyperband in self.hyperbands:
+        for hyperband_idx, hyperband in enumerate(self.hyperbands):
             try:
                 new_trial = hyperband.request_trial()
             except StopIteration:
@@ -191,13 +191,13 @@ class HyperbandDriver:
             if new_trial is not None:
                 if new_trial.trial is None:
                     new_trial.trial = self.generate_new_trial()
-                return new_trial
+                return hyperband_idx, new_trial
         if len(self.hyperbands) < self.max_hyperbands:
             self.hyperbands.append(Hyperband(min_budget=self.min_budget,
                                              max_budget=self.max_budget,
                                              reduction_ratio=self.reduction_ratio))
             return self.get_next_hyperband_trial()
-        return None
+        return None, None
 
     def get_available_slots(self):
         return 0
@@ -206,17 +206,18 @@ class HyperbandDriver:
         while True:
             n_slots = self.get_available_slots()
             for _ in range(n_slots):
-                new_trial = self.get_next_hyperband_trial()
+                hyperband_idx, new_trial = self.get_next_hyperband_trial()
                 if new_trial is not None:
                     # launch new trial
                     # add to trials being watched
-                    pass
+                    self.watch_active_trials.append((hyperband_idx, new_trial))
 
             completed_trials = set()
-            for trial in self.watch_active_trials:
+            for hyperband_idx, trial in self.watch_active_trials:
                 # check if completed
                 # if completed, add to completed_trials, and report back to the corresponding hyperbands
-                pass
+                metric = float('nan')
+                self.hyperbands[hyperband_idx].report_trial(trial.bracket, trial.round, trial.trial, metric)
 
             self.watch_active_trials[:] = [t for t in self.watch_active_trials if t not in completed_trials]
 
