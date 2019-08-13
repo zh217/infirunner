@@ -1,8 +1,12 @@
 import abc
 import enum
 import math
+import time
+
 import infirunner.param as param
 from collections import namedtuple
+
+from infirunner.util import make_trial_id
 
 
 def int_ceil(x):
@@ -160,15 +164,23 @@ class Hyperband:
 
 
 class HyperbandDriver:
-    def __init__(self, experiment_dir, min_budget, max_budget, reduction_ratio=math.e):
+    def __init__(self, experiment_dir, generator, min_budget, max_budget, reduction_ratio=math.e, sleep_interval=10,
+                 max_hyperbands=2):
         self.experiment_dir = experiment_dir
         self.min_budget = min_budget
         self.max_budget = max_budget
         self.reduction_ratio = reduction_ratio
+        self.sleep_interval = sleep_interval
         self.hyperbands = []
+        self.watch_active_trials = []
+        self.generator = generator
+        self.max_hyperbands = max_hyperbands
 
     def generate_new_trial(self):
-        return 'xx'
+        new_id = make_trial_id()
+        self.generator.change_capsule_trial_id(new_id)
+        self.generator.save_start_state('xxx')
+        return new_id
 
     def get_next_hyperband_trial(self):
         for hyperband in self.hyperbands:
@@ -180,18 +192,29 @@ class HyperbandDriver:
                 if new_trial.trial is None:
                     new_trial.trial = self.generate_new_trial()
                 return new_trial
-        self.hyperbands.append(Hyperband(min_budget=self.min_budget,
-                                         max_budget=self.max_budget,
-                                         reduction_ratio=self.reduction_ratio))
-        return self.get_next_hyperband_trial()
+        if len(self.hyperbands) < self.max_hyperbands:
+            self.hyperbands.append(Hyperband(min_budget=self.min_budget,
+                                             max_budget=self.max_budget,
+                                             reduction_ratio=self.reduction_ratio))
+            return self.get_next_hyperband_trial()
+        return None
 
-    def start_epoch(self):
-        pass
+    def get_available_slots(self):
+        return 0
+
+    def start(self):
+        while True:
+            n_slots = self.get_available_slots()
+            for _ in range(n_slots):
+                new_trial = self.get_next_hyperband_trial()
+                if new_trial is not None:
+                    # launch new trial
+                    pass
+
+            time.sleep(self.sleep_interval)
 
     def get_trial_current_budget(self, trial_id):
         pass
-
-
 
 
 if __name__ == '__main__':

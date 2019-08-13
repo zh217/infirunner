@@ -1,8 +1,6 @@
 import os
 import random
-import string
 import time
-import datetime
 import json
 import sys
 import inspect
@@ -16,6 +14,8 @@ import numpy as np
 
 from contextlib import contextmanager
 from torch.utils.tensorboard import SummaryWriter
+
+from infirunner.util import make_trial_id
 
 DEBUG_MODE = 'debug'
 TRAIN_MODE = 'train'
@@ -332,12 +332,6 @@ class DynamicStateGetter:
         for state_getter in self.state_getters:
             ret.update(state_getter())
         return ret
-
-
-def make_trial_id():
-    rd_id = ''.join(random.choice(string.ascii_letters) for _ in range(6))
-    trial_id = f'{datetime.datetime.now():%y%m%d_%H%M%S}_{rd_id}'
-    return trial_id
 
 
 active_capsule = None
