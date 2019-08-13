@@ -112,7 +112,7 @@ class Supervisor:
         for proc_info in self.active_procs:
             ret_code = proc_info['proc'].poll()
             if ret_code is not None:
-                self.print_log((Fore.RED if ret_code else Fore.GREEN) + 'daemon', proc_info['proc'].pid,
+                self.print_log((Fore.RED if ret_code else Fore.GREEN) + 'worker', proc_info['proc'].pid,
                                'completed with ret code', ret_code, 'for',
                                proc_info['trial_id'], self.mode, Style.RESET_ALL)
                 proc_info['ret_code'] = ret_code
@@ -126,7 +126,7 @@ class Supervisor:
                   encoding='ascii') as logfile:
             logfile.write(json.dumps({
                 'supervisor': os.getpid(),
-                'daemon': proc_info['proc'].pid,
+                'worker': proc_info['proc'].pid,
                 'ret_code': proc_info['ret_code'],
                 'start_at': proc_info['start_at'],
                 'end_at': time.time(),
@@ -167,6 +167,7 @@ class Supervisor:
 
             self.last_pending_count = len(pending)
             self.last_active_count = len(self.active_procs)
+            self.last_slots = len(available_gpus)
             for gpu_idx, run_info in zip(available_gpus, pending):
                 run_status = self.run_capsule(run_info, gpu_idx)
                 if run_status:
@@ -202,7 +203,7 @@ class Supervisor:
                                      'INFR_REDIRECT_IO': '1',
                                      'INFR_START_STATE': os.path.join(run_info['trial_dir'], 'start_state.json')})
 
-        self.print_log('started daemon', proc.pid, 'for', run_info['trial_id'], self.mode)
+        self.print_log('started worker', proc.pid, 'for', run_info['trial_id'], self.mode)
 
         return {'trial_dir': run_info['trial_dir'],
                 'trial_id': run_info['trial_id'],

@@ -1,6 +1,7 @@
 import importlib
 import os
 import json
+import shutil
 import time
 
 import click
@@ -30,16 +31,19 @@ class Generator:
         use_params = {**self.capsule.params}
         if params is not None:
             use_params.update(params)
-        with open(os.path.join(self.capsule.save_path, f'start_state.json'), 'w') as f:
-            json.dump({
-                'generated_at': time.time(),
-                'module_name': self.module_name,
-                'start_budget': start_budget,
-                'end_budget': end_budget,
-                'params': use_params,
-                'param_gens': self.capsule.serialize_param_gen(),
-                'n_gpu': n_gpu,
-            }, f, ensure_ascii=False, indent=2, allow_nan=True)
+        state = {
+            'generated_at': time.time(),
+            'module_name': self.module_name,
+            'start_budget': start_budget,
+            'end_budget': end_budget,
+            'params': use_params,
+            'param_gens': self.capsule.serialize_param_gen(),
+            'n_gpu': n_gpu,
+        }
+        with open(os.path.join(self.capsule.save_path, f'start_state.json'), 'w', encoding='utf-8') as f:
+            json.dump(state, f, ensure_ascii=False, indent=2, allow_nan=True)
+        with open(os.path.join(self.capsule.save_path, f'last_state.json'), 'w', encoding='utf-8') as f:
+            json.dump(state, f, ensure_ascii=False, indent=2, allow_nan=True)
 
 
 @click.command()
