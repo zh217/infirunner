@@ -72,8 +72,9 @@ class Param(ABC):
             cur[ks[-1]] = self._capsule.params[self._key]
         return params
 
+    @abstractmethod
     def encode_as_numerical(self, value):
-        return value
+        pass
 
     def __repr__(self):
         repr_str = f'<{self.__class__.__name__}'
@@ -157,6 +158,9 @@ class RandomIntParam(Param):
     def get_next_value(self):
         return np.random.randint(self.low, self.high)
 
+    def encode_as_numerical(self, value):
+        return (value - self.low) / (self.high - self.low)
+
     def serialize_as_nni(self):
         return {
             '_type': 'randint',
@@ -172,6 +176,9 @@ class UniformParam(Param):
 
     def get_next_value(self):
         return np.random.uniform(self.low, self.high)
+
+    def encode_as_numerical(self, value):
+        return (value - self.low) / (self.high - self.low)
 
     def serialize_as_nni(self):
         return {
@@ -194,6 +201,9 @@ class QUniformParam(Param):
     def get_next_value(self):
         return _clip(random.uniform(self.low, self.high), self.q, self.low, self.high)
 
+    def encode_as_numerical(self, value):
+        return (value - self.low) / (self.high - self.low)
+
     def serialize_as_nni(self):
         return {
             '_type': 'quniform',
@@ -209,6 +219,9 @@ class LogUniformParam(Param):
 
     def get_next_value(self):
         return np.exp(np.random.uniform(np.log(self.low), np.log(self.high)))
+
+    def encode_as_numerical(self, value):
+        return (np.log(value) - np.log(self.low)) / (np.log(self.high) - np.log(self.low))
 
     def serialize_as_nni(self):
         return {
@@ -227,6 +240,9 @@ class QLogUniformParam(Param):
     def get_next_value(self):
         return _clip(np.exp(np.random.uniform(np.log(self.low), np.log(self.high))), self.q, self.low, self.high)
 
+    def encode_as_numerical(self, value):
+        return (np.log(value) - np.log(self.low)) / (np.log(self.high) - np.log(self.low))
+
     def serialize_as_nni(self):
         return {
             '_type': 'qloguniform',
@@ -242,6 +258,9 @@ class NormalParam(Param):
 
     def get_next_value(self):
         return np.random.normal(self.mean, self.std)
+
+    def encode_as_numerical(self, value):
+        return (value - self.mean) / self.std
 
     def serialize_as_nni(self):
         return {
@@ -260,6 +279,9 @@ class QNormalParam(Param):
     def get_next_value(self):
         return np.round(np.random.normal(self.mean, self.std) / self.q) * self.q
 
+    def encode_as_numerical(self, value):
+        return (value - self.mean) / self.std
+
     def serialize_as_nni(self):
         return {
             '_type': 'qnormal',
@@ -275,6 +297,9 @@ class LogNormalParam(Param):
 
     def get_next_value(self):
         return np.exp(np.random.normal(self.mean, self.std))
+
+    def encode_as_numerical(self, value):
+        return (np.log(value) - self.mean) / self.std
 
     def serialize_as_nni(self):
         return {
@@ -292,6 +317,9 @@ class QLogNormalParam(Param):
 
     def get_next_value(self):
         return np.round(np.exp(np.random.normal(self.mean, self.std)) / self.q) * self.q
+
+    def encode_as_numerical(self, value):
+        return (np.log(value) - self.mean) / self.std
 
     def serialize_as_nni(self):
         return {
