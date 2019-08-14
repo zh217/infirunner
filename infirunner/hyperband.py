@@ -15,7 +15,7 @@ import infirunner.param as param
 from collections import namedtuple
 from colorama import Style, Fore, Back
 
-from infirunner.util import make_trial_id
+from infirunner.util import make_trial_id, UniformBernoulli
 from infirunner.generator import Generator
 from infirunner.watch import ExperimentWatcher
 
@@ -60,9 +60,6 @@ class ParamGen(abc.ABC):
         importlib.import_module(module)
         self.capsule = infirunner.capsule.active_capsule
 
-    def reset_model(self, good_elements, bad_elements):
-        pass
-
     def get_next_parameter(self):
         return self.capsule.gen_params(use_default=False, skip_const=True)
 
@@ -72,16 +69,94 @@ class RandomParamGen(ParamGen):
 
 
 class BOHBParamGen(ParamGen):
-    def __init__(self, module, n_trials):
+    def __init__(self, module, experiment_dir, random_ratio, sample_size, result_size_threshold=None, good_ratio=0.15,
+                 model_cache_time=30, mode='minimize'):
         super().__init__(module)
-        self.n_trials = n_trials
 
-    def reset_model(self, good_elements, bad_elements):
-        pass
+        if result_size_threshold is None:
+            sample_params = super().get_next_parameter()
+            result_size_threshold = len(sample_params) + 1
+
+        self.experiment_dir = experiment_dir
+        self.dice = UniformBernoulli(random_ratio)
+        self.good_ratio = good_ratio
+        self.sample_size = sample_size
+        self.result_size_threshold = result_size_threshold
+        self.model_cache_time = model_cache_time
+        self.last_stats_collect_time = 0.
+        self.last_stats = (None, None)
+        self.last_models = (None, None)
+        self.is_maximize = mode == 'maximize'
+
+    def get_suggested_next_parameter(self, goods, bads):
+        good_model, bad_model = self.last_models
+        if good_model is None or bad_model is None:
+            good_model = build_it()
+            bad_model = build_it()
+            self.last_models = good_model, bad_model
+
+        candidates = [super().get_next_parameter() for _ in range(self.sample_size)]
+
+        # use model to select the best one and return it
+
+    def collect_stats(self):
+        now = time.time()
+        if now - self.last_stats_collect_time > self.model_cache_time:
+            metrics = list(self.get_all_budget_metrics().items())
+            metrics.sort(key=lambda x: len(x[1]), reverse=True)
+            goods = None
+            bads = None
+
+            for budget, trial_data in metrics:
+                bads_ = [(trial, metric) for trial, metric in trial_data if
+                         metric is None or not math.isfinite(metric)]
+                goods_ = [(trial, metric) for trial, metric in trial_data if
+                          metric is not None and math.isfinite(metric)]
+                goods_.sort(key=lambda x: x[1], reverse=self.is_maximize)
+                good_size = int_ceil(len(goods_) * self.good_ratio)
+                bads_ = goods_[good_size:] + bads_
+                goods_ = goods_[:good_size]
+                if len(bads_) >= self.result_size_threshold and len(goods_) >= self.result_size_threshold:
+                    log_print(Fore.LIGHTBLACK_EX, f'collected stats for budget {budget} with {len(goods_)} goods, '
+                                                  f'{len(bads_)} bads')
+                    log_print(Fore.LIGHTBLACK_EX, f'best good: {goods_[0][1]:10.4f}, best bad: {bads_[0][1]:10.4f}')
+                    goods = goods_
+                    bads = bads_
+                    break
+            if self.last_stats != (goods, bads):
+                self.last_stats = (goods, bads)
+                self.last_models = (None, None)
+            self.last_stats_collect_time = now
+            return goods, bads
+        else:
+            return self.last_stats
+
+    def get_all_budget_metrics(self):
+        active_dirs = []
+        for parent, dirs, files in os.walk(self.experiment_dir):
+            active_dirs = dirs
+            break
+
+        metrics = {}
+
+        for dir in active_dirs:
+            try:
+                with open(os.path.join(self.experiment_dir, dir, 'metric.tsv'), 'rb') as f:
+                    for l in f:
+                        budget, metric_time, metric_res = l.split(b'\t')
+                        budget_metric = metrics.setdefault(int(budget), [])
+                        budget_metric.append((dir, float(metric_res)))
+            except FileNotFoundError:
+                continue
+        return metrics
 
     def get_next_parameter(self):
-        if True:
+        if self.dice():
             return super().get_next_parameter()
+        else:
+            goods, bads = self.collect_stats()
+            if goods and bads:
+                return self.get_suggested_next_parameter(goods, bads)
 
 
 class Hyperband:

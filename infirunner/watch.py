@@ -158,24 +158,6 @@ class ExperimentWatcher:
             'trials': [(k, self.watchers[k].poll(**kwargs)) for k in ret_trials_keys]
         }
 
-    def get_all_budget_metrics(self):
-        for parent, dirs, files in os.walk(self.experiment_dir):
-            active_dirs = dirs
-            break
-
-        metrics = {}
-
-        for dir in active_dirs:
-            try:
-                with open(os.path.join(self.experiment_dir, dir, 'metric.tsv'), 'rb') as f:
-                    for l in f:
-                        budget, metric_time, metric_res = l.split(b'\t')
-                        budget_metric = metrics.setdefault(int(budget), [])
-                        budget_metric.append((dir, float(metric_res)))
-            except FileNotFoundError:
-                continue
-        return metrics
-
     def get_trial_last_state(self, trial):
         with open(os.path.join(self.experiment_dir, trial, 'last_state.json'), 'r', encoding='utf-8') as f:
             return json.load(f)
@@ -234,7 +216,6 @@ def pprint_result(result, fields, limit, hide_inactive):
 @click.option('--limit', type=int)
 @click.argument('folder', required=True)
 def run(folder, fields, only, watch, limit, hide_inactive):
-    import pprint
     fields = [field for field in fields.split(',') if field]
     if only:
         only = [t for t in only.split(',') if t]
@@ -246,9 +227,6 @@ def run(folder, fields, only, watch, limit, hide_inactive):
             pprint_result(watcher.poll(only=only), fields, limit, hide_inactive)
             time.sleep(watch)
     else:
-        metrics = watcher.get_all_budget_metrics()
-        pprint.pprint(watcher.get_trial_last_state(metrics[1][0][0]))
-        pprint.pprint(metrics)
         pprint_result(watcher.poll(only=only), fields, limit, hide_inactive)
 
 
