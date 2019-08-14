@@ -45,6 +45,16 @@ class Generator:
         with open(os.path.join(self.capsule.save_path, f'last_state.json'), 'w', encoding='utf-8') as f:
             json.dump(state, f, ensure_ascii=False, indent=2, allow_nan=True)
 
+    def amend_start_state(self, end_budget, n_gpu):
+        with open(os.path.join(self.capsule.save_path, f'last_state.json'), 'r', encoding='utf-8') as f:
+            state = json.load(f)
+        state['n_gpu'] = n_gpu
+        state['start_budget'] = state['end_budget']
+        state['end_budget'] = end_budget
+        with open(os.path.join(self.capsule.save_path, f'start_state.json'), 'w', encoding='utf-8') as f:
+            json.dump(state, f, ensure_ascii=False, indent=2, allow_nan=True)
+        return state
+
 
 @click.command()
 @click.argument('module', required=True)

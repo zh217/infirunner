@@ -119,8 +119,8 @@ class ExperimentWatcher:
         self.watchers = {}
 
     def poll(self, slots=True, only=None, **kwargs):
-        active_dirs = None
-        slot_files = None
+        active_dirs = set()
+        slot_files = []
         for parent, dirs, files in os.walk(self.experiment_dir):
             active_dirs = set(dirs)
             slot_files = [file for file in files if file.startswith('slots_')]
