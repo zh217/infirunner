@@ -10,10 +10,12 @@ import datetime
 import colorama
 import click
 import infirunner.capsule
+import numpy as np
 
 import infirunner.param as param
 from collections import namedtuple
 from colorama import Style, Fore, Back
+from statsmodels.nonparametric.api import KDEMultivariate
 
 from infirunner.util import make_trial_id, UniformBernoulli
 from infirunner.generator import Generator
@@ -70,7 +72,7 @@ class RandomParamGen(ParamGen):
 
 class BOHBParamGen(ParamGen):
     def __init__(self, module, experiment_dir, random_ratio, sample_size, result_size_threshold=None, good_ratio=0.15,
-                 model_cache_time=30, mode='minimize'):
+                 model_cache_time=30, mode='minimize', min_bandwidth=1e-3, bandwidth_estimation='normal_reference'):
         super().__init__(module)
 
         if result_size_threshold is None:
@@ -87,17 +89,42 @@ class BOHBParamGen(ParamGen):
         self.last_stats = (None, None)
         self.last_models = (None, None)
         self.is_maximize = mode == 'maximize'
+        self.min_bandwidth = min_bandwidth
+        self.bandwidth_estimation = bandwidth_estimation
+        self.kde_vartypes, self.kde_data_encoder = self.make_kde_helpers()
+
+    def make_kde_helpers(self):
+        var_types = ''
+
+        def data_encoder(data):
+            pass
+
+        return var_types, data_encoder
 
     def get_suggested_next_parameter(self, goods, bads):
         good_model, bad_model = self.last_models
         if good_model is None or bad_model is None:
-            good_model = build_it()
-            bad_model = build_it()
+            good_model = KDEMultivariate(data=self.kde_data_encoder(goods),
+                                         var_type=self.kde_vartypes,
+                                         bw=self.bandwidth_estimation)
+            bad_model = KDEMultivariate(data=self.kde_data_encoder(bads),
+                                        var_type=self.kde_vartypes,
+                                        bw=self.bandwidth_estimation)
+            good_model.bw = np.clip(good_model.bw, self.min_bandwidth, None)
+            bad_model.bw = np.clip(bad_model.bw, self.min_bandwidth, None)
             self.last_models = good_model, bad_model
 
-        candidates = [super().get_next_parameter() for _ in range(self.sample_size)]
-
-        # use model to select the best one and return it
+        best_score = float('-inf')
+        best_candidate = None
+        for _ in range(self.sample_size):
+            next_param = super().get_next_parameter()
+            good_score = np.log(np.clip(good_model.pdf(next_param), 1e-32, None))
+            bad_score = np.log(np.clip(bad_model.pdf(next_param), 1e-32, None))
+            score = good_score - bad_score
+            if score > best_score:
+                best_score = score
+                best_candidate = next_param
+        return best_candidate
 
     def collect_stats(self):
         now = time.time()
