@@ -28,6 +28,10 @@ class Param(ABC):
                 ret[k] = v
         return ret
 
+    @property
+    def var_type(self):
+        return 'c'
+
     def __call__(self, f):
         if inspect.ismethod(f) or f.__name__ == '__init__':
             @functools.wraps(f)
@@ -68,6 +72,9 @@ class Param(ABC):
             cur[ks[-1]] = self._capsule.params[self._key]
         return params
 
+    def encode_as_numerical(self, value):
+        return value
+
     def __repr__(self):
         repr_str = f'<{self.__class__.__name__}'
         for k, v in self.serialize().items():
@@ -80,6 +87,13 @@ class ConstParam(Param):
     def __init__(self, capsule, key, default, const):
         super().__init__(capsule, key, default)
         self.const = const
+
+    @property
+    def var_type(self):
+        return 'u'
+
+    def encode_as_numerical(self, value):
+        return 0
 
     def get_next_value(self):
         return self.const
@@ -97,6 +111,13 @@ class ChoiceParam(Param):
     def get_next_value(self):
         return random.choices(self.choices, weights=self.prob, k=1)[0]
 
+    @property
+    def var_type(self):
+        return 'u'
+
+    def encode_as_numerical(self, value):
+        return self.choices.index(value)
+
     def serialize_as_nni(self):
         return {
             '_type': 'choice',
@@ -112,6 +133,13 @@ class OrderedParam(Param):
 
     def get_next_value(self):
         return random.choices(self.choices, weights=self.prob, k=1)[0]
+
+    @property
+    def var_type(self):
+        return 'o'
+
+    def encode_as_numerical(self, value):
+        return self.choices.index(value)
 
     def serialize_as_nni(self):
         return {
