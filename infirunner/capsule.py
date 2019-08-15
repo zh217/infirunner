@@ -1,3 +1,4 @@
+import math
 import os
 import random
 import time
@@ -213,7 +214,7 @@ class RunnerCapsule:
             f.write(f'{self.budget_current}\t{time.time()}\t{metric}\n')
         if save_state:
             self.save_state()
-        if self.budget_current >= self.budget_end:
+        if not math.isfinite(metric) or self.budget_current >= self.budget_end:
             if self._tb_writer is not None:
                 self._tb_writer.close()
             sys.exit()
