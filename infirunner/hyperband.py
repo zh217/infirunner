@@ -1,8 +1,10 @@
 import abc
 import enum
 import importlib
+import json
 import math
 import os
+import random
 import sys
 import time
 import datetime
@@ -11,6 +13,7 @@ import colorama
 import click
 import infirunner.capsule
 import numpy as np
+import scipy.stats as sps
 
 import infirunner.param as param
 from collections import namedtuple
@@ -71,18 +74,32 @@ class RandomParamGen(ParamGen):
 
 
 class BOHBParamGen(ParamGen):
-    def __init__(self, module, experiment_dir, random_ratio, sample_size, result_size_threshold=None, good_ratio=0.15,
-                 model_cache_time=30, mode='minimize', min_bandwidth=1e-3, bandwidth_estimation='normal_reference'):
+    def __init__(self, module, experiment_dir,
+                 random_ratio, random_sample_size,
+                 guided_ratio, guided_sample_size,
+                 result_size_threshold=None, good_ratio=0.15,
+                 model_cache_time=30, mode='minimize',
+                 min_bandwidth=1e-3, bandwidth_estimation='normal_reference',
+                 bandwidth_factor=3.):
         super().__init__(module)
 
+        assert 0 <= random_ratio <= 1
+        assert 0 <= guided_ratio <= 1
+        assert 0 <= random_ratio + guided_ratio <= 1
+
+        sample_params = super().get_next_parameter()
         if result_size_threshold is None:
-            sample_params = super().get_next_parameter()
             result_size_threshold = len(sample_params) + 1
+        else:
+            result_size_threshold = max(len(sample_params) + 1, result_size_threshold)
+        log_print(Fore.LIGHTBLACK_EX + 'model-based threshold is', result_size_threshold)
 
         self.experiment_dir = experiment_dir
-        self.dice = UniformBernoulli(random_ratio)
+        self.random_dice = UniformBernoulli(random_ratio)
+        self.guided_dice = UniformBernoulli(guided_ratio / (1 - random_ratio))
         self.good_ratio = good_ratio
-        self.sample_size = sample_size
+        self.random_sample_size = random_sample_size
+        self.guided_sample_size = guided_sample_size
         self.result_size_threshold = result_size_threshold
         self.model_cache_time = model_cache_time
         self.last_stats_collect_time = 0.
@@ -91,23 +108,63 @@ class BOHBParamGen(ParamGen):
         self.is_maximize = mode == 'maximize'
         self.min_bandwidth = min_bandwidth
         self.bandwidth_estimation = bandwidth_estimation
-        self.kde_vartypes, self.kde_data_encoder = self.make_kde_helpers()
+        self.bandwidth_factor = bandwidth_factor
+        self.kde_vartypes, self.kde_data_encoder, self.kde_data_decoder, self.kde_data_bounds = self.make_kde_helpers()
 
     def make_kde_helpers(self):
-        var_types = ''
+        param_keys = list(super().get_next_parameter().keys())
+        param_keys.sort()
+        param_gen = self.capsule.param_gen
+
+        var_types = ''.join(param_gen[key].var_type for key in param_keys)
+
+        data_bounds = [param_gen[key].encoded_bounds() for key in param_keys]
 
         def data_encoder(data):
-            pass
+            return [param_gen[key].encode_as_numerical(data[key]) for key in param_keys]
 
-        return var_types, data_encoder
+        def data_decoder(data, old_params):
+            ret = {}
+            for idx, key in enumerate(param_keys):
+                decoded = param_gen[key].decode_from_numerical(data[idx])
+                if var_types[idx] == 'u' and decoded != old_params[key]:
+                    while True:
+                        decoded = param_gen[key].get_next_value()
+                        if decoded != old_params[key]:
+                            break
+                ret[key] = decoded
+            return ret
+
+        return var_types, data_encoder, data_decoder, data_bounds
+
+    def get_trial_params(self, trial):
+        with open(os.path.join(self.experiment_dir, trial, f'last_state.json'), 'r', encoding='utf-8') as f:
+            old_params = json.load(f)['params']
+        return old_params
+
+    def guided_modify_parameter(self, trial, model):
+        old_params = self.get_trial_params(trial)
+        old_params_encoded = self.kde_data_encoder(old_params)
+        new_params_encoded = []
+        for old_param, bw_, (lbound, ubound), vartype in zip(old_params_encoded, model.bw, self.kde_data_bounds,
+                                                             self.kde_vartypes):
+            bw = bw_ * self.bandwidth_factor
+            if lbound is None or ubound is None:
+                new_params = np.random.normal(loc=old_param, scale=bw)
+            else:
+                new_params = sps.truncnorm.rvs((lbound - old_param) / bw, (ubound - old_param) / bw,
+                                               loc=old_param, scale=bw)
+            new_params_encoded.append(new_params)
+
+        return self.kde_data_decoder(new_params_encoded, old_params)
 
     def get_suggested_next_parameter(self, goods, bads):
         good_model, bad_model = self.last_models
         if good_model is None or bad_model is None:
-            good_model = KDEMultivariate(data=self.kde_data_encoder(goods),
+            good_model = KDEMultivariate(data=[self.kde_data_encoder(self.get_trial_params(t)) for t, _ in goods],
                                          var_type=self.kde_vartypes,
                                          bw=self.bandwidth_estimation)
-            bad_model = KDEMultivariate(data=self.kde_data_encoder(bads),
+            bad_model = KDEMultivariate(data=[self.kde_data_encoder(self.get_trial_params(t)) for t, _ in bads],
                                         var_type=self.kde_vartypes,
                                         bw=self.bandwidth_estimation)
             good_model.bw = np.clip(good_model.bw, self.min_bandwidth, None)
@@ -116,21 +173,27 @@ class BOHBParamGen(ParamGen):
 
         best_score = float('-inf')
         best_candidate = None
-        for _ in range(self.sample_size):
-            next_param = super().get_next_parameter()
-            good_score = np.log(np.clip(good_model.pdf(next_param), 1e-32, None))
-            bad_score = np.log(np.clip(bad_model.pdf(next_param), 1e-32, None))
+        use_guided = self.guided_dice()
+        for _ in range(self.guided_sample_size if use_guided else self.random_sample_size):
+            if use_guided:
+                next_param = self.guided_modify_parameter(random.choice(goods)[0], good_model)
+            else:
+                next_param = super().get_next_parameter()
+            good_score = np.log(np.clip(good_model.pdf(self.kde_data_encoder(next_param)), 1e-32, None))
+            bad_score = np.log(np.clip(bad_model.pdf(self.kde_data_encoder(next_param)), 1e-32, None))
             score = good_score - bad_score
             if score > best_score:
                 best_score = score
                 best_candidate = next_param
+        log_print(Fore.LIGHTBLACK_EX + 'proposing', 'guided' if use_guided else 'sieved', 'parameter with score',
+                  best_score)
         return best_candidate
 
     def collect_stats(self):
         now = time.time()
         if now - self.last_stats_collect_time > self.model_cache_time:
             metrics = list(self.get_all_budget_metrics().items())
-            metrics.sort(key=lambda x: len(x[1]), reverse=True)
+            metrics.sort(key=lambda x: x[0], reverse=True)
             goods = None
             bads = None
 
@@ -139,14 +202,15 @@ class BOHBParamGen(ParamGen):
                          metric is None or not math.isfinite(metric)]
                 goods_ = [(trial, metric) for trial, metric in trial_data if
                           metric is not None and math.isfinite(metric)]
-                goods_.sort(key=lambda x: x[1], reverse=self.is_maximize)
-                good_size = int_ceil(len(goods_) * self.good_ratio)
-                bads_ = goods_[good_size:] + bads_
-                goods_ = goods_[:good_size]
-                if len(bads_) >= self.result_size_threshold and len(goods_) >= self.result_size_threshold:
-                    log_print(Fore.LIGHTBLACK_EX, f'collected stats for budget {budget} with {len(goods_)} goods, '
-                                                  f'{len(bads_)} bads')
-                    log_print(Fore.LIGHTBLACK_EX, f'best good: {goods_[0][1]:10.4f}, best bad: {bads_[0][1]:10.4f}')
+                if len(goods_) >= self.result_size_threshold and len(goods_) + len(bads_) > self.result_size_threshold:
+                    goods_.sort(key=lambda x: x[1], reverse=self.is_maximize)
+                    good_size = int_ceil(len(goods_) * self.good_ratio)
+                    bads_ = list(reversed(goods_))[
+                            :max(len(goods_) - good_size, self.result_size_threshold - len(bads_))] + bads_
+                    goods_ = goods_[:max(good_size, self.result_size_threshold)]
+                    log_print(Fore.LIGHTBLACK_EX + f'collected stats for budget {budget} with {len(goods_)} goods, '
+                                                   f'{len(bads_)} bads')
+                    log_print(Fore.LIGHTBLACK_EX + f'best good: {goods_[0][1]:10.4f}, best bad: {bads_[0][1]:10.4f}')
                     goods = goods_
                     bads = bads_
                     break
@@ -178,12 +242,16 @@ class BOHBParamGen(ParamGen):
         return metrics
 
     def get_next_parameter(self):
-        if self.dice():
+        if self.random_dice():
+            log_print(Fore.LIGHTBLACK_EX + 'generate random parameter because dice says so')
             return super().get_next_parameter()
         else:
             goods, bads = self.collect_stats()
             if goods and bads:
                 return self.get_suggested_next_parameter(goods, bads)
+            else:
+                log_print(Fore.LIGHTBLACK_EX + 'generate random parameter because not enough samples')
+                return super().get_next_parameter()
 
 
 class Hyperband:
@@ -202,12 +270,14 @@ class Hyperband:
             for round_idx, round in enumerate(bracket):
                 actives = [e for e in round if e.active]
                 dones = [e for e in round if e.metric is not None]
+                good_dones = [e for e in dones if math.isfinite(e.metric)]
                 budget = round[0].budget
                 to_print = (f'\tround {round_idx:1}: {len(round):3} trials with {budget:3} budgets, ' +
                             f'{len(actives):3} active, {len(dones):3} complete')
-                if dones:
-                    best_metric = min(e.metric for e in dones if math.isfinite(e.metric))
-                    to_print += f', {best_metric:10.4f} best'
+                if good_dones:
+                    best_metric = min(e.metric for e in good_dones)
+                    best_trial = [e.trial for e in dones if e.metric == best_metric][0]
+                    to_print += f', {best_metric:10.4f} best {best_trial}'
                 else:
                     to_print = Fore.LIGHTBLACK_EX + to_print
                 log_print(to_print)
@@ -341,7 +411,9 @@ class HyperbandDriver:
         self.trial_generator.change_capsule_trial_id(old_trial)
         new_state = self.trial_generator.amend_start_state(end_budget=end_budget, n_gpu=n_gpu)
         log_print(
-            Fore.LIGHTBLUE_EX + f'amended trial {old_trial} with budget {new_state["start_budget"]} -> {new_state["end_budget"]}')
+            Fore.LIGHTBLUE_EX + f'amended trial {old_trial} with budget '
+                                f'{new_state["start_budget"]} -> {new_state["end_budget"]}, params',
+            new_state['params'])
 
     def get_next_hyperband_trial(self):
         for hyperband_idx, hyperband in enumerate(self.hyperbands):
@@ -420,7 +492,7 @@ class HyperbandDriver:
 
 
 @click.command()
-@click.option('--exp-path', default='_exp')
+@click.option('--exp-path', required=True)
 @click.option('--module', required=True)
 @click.option('--min-budget', type=int, default=1)
 @click.option('--max-budget', type=int, required=True)
@@ -428,10 +500,34 @@ class HyperbandDriver:
 @click.option('--max-hyperbands', type=int, default=2)
 @click.option('--reduction-ratio', type=float, default=math.e)
 @click.option('--mode', type=click.Choice(['maximize', 'minimize']), default='minimize')
-def run(module, exp_path, min_budget, max_budget, reduction_ratio, max_hyperbands, sleep_interval, mode):
+@click.option('--bohb-random-ratio', type=float, default=0.15)
+@click.option('--bohb-guided-ratio', type=float, default=0.7)
+@click.option('--bohb-random-size', type=int, default=64)
+@click.option('--bohb-guided-size', type=int, default=128)
+@click.option('--bohb-result-size-threshold', type=int)
+@click.option('--bohb-good-ratio', type=float, default=0.15)
+@click.option('--bohb-model-cache-time', type=float, default=30.)
+@click.option('--bohb-min-bandwidth', type=float, default=1e-3)
+@click.option('--bohb-bandwidth-estimation', default='normal_reference')
+@click.option('--bohb-bandwidth-factor', type=float, default=3)
+def run(module, exp_path, min_budget, max_budget, reduction_ratio, max_hyperbands, sleep_interval, mode,
+        bohb_random_ratio, bohb_guided_ratio, bohb_random_size, bohb_guided_size,
+        bohb_result_size_threshold, bohb_good_ratio, bohb_model_cache_time,
+        bohb_min_bandwidth, bohb_bandwidth_estimation, bohb_bandwidth_factor):
     exp_path = os.path.abspath(exp_path)
     trial_gen = Generator(module, exp_path)
-    param_gen = ParamGen(module)
+    param_gen = BOHBParamGen(module, exp_path,
+                             random_ratio=bohb_random_ratio,
+                             random_sample_size=bohb_random_size,
+                             guided_ratio=bohb_guided_ratio,
+                             guided_sample_size=bohb_guided_size,
+                             result_size_threshold=bohb_result_size_threshold,
+                             good_ratio=bohb_good_ratio,
+                             model_cache_time=bohb_model_cache_time,
+                             mode=mode,
+                             min_bandwidth=bohb_min_bandwidth,
+                             bandwidth_estimation=bohb_bandwidth_estimation,
+                             bandwidth_factor=bohb_bandwidth_factor)
     driver = HyperbandDriver(experiment_dir=exp_path,
                              trial_generator=trial_gen,
                              param_generator=param_gen,

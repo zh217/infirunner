@@ -76,12 +76,24 @@ class Param(ABC):
     def encode_as_numerical(self, value):
         pass
 
+    @abstractmethod
+    def encoded_bounds(self):
+        pass
+
+    @abstractmethod
+    def decode_from_numerical(self, coded):
+        pass
+
     def __repr__(self):
         repr_str = f'<{self.__class__.__name__}'
         for k, v in self.serialize().items():
             repr_str += f' {k}={repr(v)}'
         repr_str += '>'
         return repr_str
+
+
+def _clip_to_q(val, q, low, high):
+    return np.clip(np.round(val / q) * q, low, high)
 
 
 class ConstParam(Param):
@@ -95,6 +107,12 @@ class ConstParam(Param):
 
     def encode_as_numerical(self, value):
         return 0
+
+    def decode_from_numerical(self, coded):
+        return 0
+
+    def encoded_bounds(self):
+        return None, None
 
     def get_next_value(self):
         return self.const
@@ -117,7 +135,17 @@ class ChoiceParam(Param):
         return 'u'
 
     def encode_as_numerical(self, value):
-        return self.choices.index(value)
+        try:
+            return self.choices.index(value)
+        except:
+            raise ValueError('Cannot encode choice: given', value, 'expect', self.choices)
+
+    def encoded_bounds(self):
+        return None, None
+
+    def decode_from_numerical(self, coded):
+        rounded = int(_clip_to_q(coded, q=1, low=0, high=len(self.choices) - 1))
+        return self.choices[rounded]
 
     def serialize_as_nni(self):
         return {
@@ -142,6 +170,13 @@ class OrderedParam(Param):
     def encode_as_numerical(self, value):
         return self.choices.index(value)
 
+    def decode_from_numerical(self, coded):
+        rounded = int(_clip_to_q(coded, q=1, low=0, high=len(self.choices) - 1))
+        return self.choices[rounded]
+
+    def encoded_bounds(self):
+        return -0.5, len(self.choices) - 0.5
+
     def serialize_as_nni(self):
         return {
             '_type': 'choice',
@@ -160,6 +195,13 @@ class RandomIntParam(Param):
 
     def encode_as_numerical(self, value):
         return (value - self.low) / (self.high - self.low)
+
+    def decode_from_numerical(self, coded):
+        restored = int(_clip_to_q(coded * (self.high - self.low) + self.low, 1, self.low, self.high))
+        return restored
+
+    def encoded_bounds(self):
+        return (self.low - 0.5) / (self.high - self.low), (self.high + 0.5) / (self.high - self.low)
 
     def serialize_as_nni(self):
         return {
@@ -180,15 +222,18 @@ class UniformParam(Param):
     def encode_as_numerical(self, value):
         return (value - self.low) / (self.high - self.low)
 
+    def decode_from_numerical(self, coded):
+        restored = np.clip(coded * (self.high - self.low) + self.low, self.low, self.high)
+        return restored
+
+    def encoded_bounds(self):
+        return 0., 1.
+
     def serialize_as_nni(self):
         return {
             '_type': 'uniform',
             '_value': [self.low, self.high]
         }
-
-
-def _clip(val, q, low, high):
-    return np.clip(np.round(val / q) * q, low, high)
 
 
 class QUniformParam(Param):
@@ -199,10 +244,17 @@ class QUniformParam(Param):
         self.q = q
 
     def get_next_value(self):
-        return _clip(random.uniform(self.low, self.high), self.q, self.low, self.high)
+        return _clip_to_q(random.uniform(self.low, self.high), self.q, self.low, self.high)
 
     def encode_as_numerical(self, value):
         return (value - self.low) / (self.high - self.low)
+
+    def decode_from_numerical(self, coded):
+        restored = coded * (self.high - self.low) + self.low
+        return _clip_to_q(restored, self.q, self.low, self.high)
+
+    def encoded_bounds(self):
+        return 0., 1.
 
     def serialize_as_nni(self):
         return {
@@ -223,6 +275,13 @@ class LogUniformParam(Param):
     def encode_as_numerical(self, value):
         return (np.log(value) - np.log(self.low)) / (np.log(self.high) - np.log(self.low))
 
+    def decode_from_numerical(self, coded):
+        restored = np.exp(coded * (np.log(self.high) - np.log(self.low)) + np.log(self.low))
+        return restored
+
+    def encoded_bounds(self):
+        return 0., 1.
+
     def serialize_as_nni(self):
         return {
             '_type': 'loguniform',
@@ -238,10 +297,17 @@ class QLogUniformParam(Param):
         self.q = q
 
     def get_next_value(self):
-        return _clip(np.exp(np.random.uniform(np.log(self.low), np.log(self.high))), self.q, self.low, self.high)
+        return _clip_to_q(np.exp(np.random.uniform(np.log(self.low), np.log(self.high))), self.q, self.low, self.high)
 
     def encode_as_numerical(self, value):
         return (np.log(value) - np.log(self.low)) / (np.log(self.high) - np.log(self.low))
+
+    def decode_from_numerical(self, coded):
+        restored = np.exp(coded * (np.log(self.high) - np.log(self.low)) + np.log(self.low))
+        return _clip_to_q(restored, self.q, self.low, self.high)
+
+    def encoded_bounds(self):
+        return 0., 1.
 
     def serialize_as_nni(self):
         return {
@@ -261,6 +327,13 @@ class NormalParam(Param):
 
     def encode_as_numerical(self, value):
         return (value - self.mean) / self.std
+
+    def decode_from_numerical(self, coded):
+        restored = coded * self.std + self.mean
+        return restored
+
+    def encoded_bounds(self):
+        return None, None
 
     def serialize_as_nni(self):
         return {
@@ -282,6 +355,13 @@ class QNormalParam(Param):
     def encode_as_numerical(self, value):
         return (value - self.mean) / self.std
 
+    def decode_from_numerical(self, coded):
+        restored = coded * self.std + self.mean
+        return np.round(restored / self.q) * self.q
+
+    def encoded_bounds(self):
+        return None, None
+
     def serialize_as_nni(self):
         return {
             '_type': 'qnormal',
@@ -300,6 +380,13 @@ class LogNormalParam(Param):
 
     def encode_as_numerical(self, value):
         return (np.log(value) - self.mean) / self.std
+
+    def decode_from_numerical(self, coded):
+        restored = np.exp(coded * self.std + self.mean)
+        return restored
+
+    def encoded_bounds(self):
+        return None, None
 
     def serialize_as_nni(self):
         return {
@@ -320,6 +407,13 @@ class QLogNormalParam(Param):
 
     def encode_as_numerical(self, value):
         return (np.log(value) - self.mean) / self.std
+
+    def decode_from_numerical(self, coded):
+        restored = np.exp(coded * self.std + self.mean)
+        return np.round(restored / self.q) * self.q
+
+    def encoded_bounds(self):
+        return None, None
 
     def serialize_as_nni(self):
         return {
@@ -374,3 +468,15 @@ class ParamGenerator:
             raise ValueError('duplicate parameter key', key)
         self.capsule._param_wrappers[key] = param_wrapper
         return param_wrapper
+
+
+if __name__ == '__main__':
+    rv = ChoiceParam(None, 'c', 'a', ['a', 'b', 'c'])
+    print(rv.encode_as_numerical('a'))
+    print(rv.decode_from_numerical(2.1))
+    rv = OrderedParam(None, 'c', 'a', ['a', 'b', 'c'])
+    print(rv.encode_as_numerical('a'))
+    print(rv.decode_from_numerical(1.9))
+    rv = UniformParam(None, 'c', 0, -10, 10)
+    print(rv.encode_as_numerical(2.1))
+    print(rv.decode_from_numerical(0.605))

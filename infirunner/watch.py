@@ -177,6 +177,7 @@ def pprint_result(result, fields, limit, hide_inactive):
     trials_data = result['trials']
     if hide_inactive:
         trials_data = [t for t in trials_data if t[1]['active']]
+    trials_data.sort(key=lambda d: (d[1]['active'], d[1]['budget'] or -1, d[0]))
     if limit:
         trials_data = trials_data[-limit:]
     for trial, data in trials_data:
