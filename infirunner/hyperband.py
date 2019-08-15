@@ -470,7 +470,7 @@ class HyperbandDriver:
                                             fields=False)['trials'] if not v['active']}
         for hyperband_idx, trial in self.watch_active_trials:
             if trial.trial in watcher_result:
-                completed_trials.add(trial.trial)
+                completed_trials.add(trial)
                 trial_result = watcher_result[trial.trial]
                 log_print(Fore.LIGHTBLACK_EX + f'obtained watcher result for {trial.trial}')
                 if trial_result['budget'] != trial.budget:
@@ -481,7 +481,7 @@ class HyperbandDriver:
                 if self.is_maximize:
                     metric = -metric
                 self.hyperbands[hyperband_idx].report_trial(trial.bracket, trial.round, trial.trial, metric)
-        self.watch_active_trials[:] = [t for t in self.watch_active_trials if t[1].trial not in completed_trials]
+        self.watch_active_trials = [t for t in self.watch_active_trials if t[1] not in completed_trials]
 
     def start_trials(self):
         n_slots = self.get_available_slots()
