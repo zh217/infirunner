@@ -264,7 +264,7 @@ class BOHBParamGen(ParamGen):
 
 
 class Hyperband:
-    def __init__(self, min_budget, max_budget, reduction_ratio=math.e):
+    def __init__(self, min_budget, max_budget, reset_first_round_nan=True, reduction_ratio=math.e):
         self.min_budget = min_budget
         self.max_budget = max_budget
         self.reduction_ratio = reduction_ratio
@@ -272,6 +272,7 @@ class Hyperband:
         self.brackets = self.make_brackets()
         self.cur_bracket_idx = 0
         self.cur_round_idx = 0
+        self.reset_first_round_nan = reset_first_round_nan
 
     def pprint_brackets(self):
         for bracket_idx, bracket in enumerate(self.brackets):
@@ -388,14 +389,15 @@ class Hyperband:
         else:
             log_print(Fore.LIGHTRED_EX + 'hyperband received report', bracket_idx, round_idx, trial, metric)
             # reset first rounder null results
-            if round_idx == 0:
+            if round_idx == 0 and self.reset_first_round_nan:
+                log_print(Fore.LIGHTRED_EX + 'reset first round nan trial')
                 requested_element.trial = None
                 requested_element.metric = None
 
 
 class HyperbandDriver:
     def __init__(self, experiment_dir, trial_generator, param_generator, min_budget, max_budget,
-                 reduction_ratio, sleep_interval, max_hyperbands, mode):
+                 reduction_ratio, sleep_interval, max_hyperbands, mode, reset_first_round_nan):
         self.experiment_dir = experiment_dir
         self.min_budget = min_budget
         self.max_budget = max_budget
@@ -408,6 +410,7 @@ class HyperbandDriver:
         self.param_generator = param_generator
         self.max_hyperbands = max_hyperbands
         self.is_maximize = mode == 'maximize'
+        self.reset_first_round_nan = reset_first_round_nan
 
     def generate_new_trial(self, end_budget, n_gpu=1):
         params = self.param_generator.get_next_parameter()
@@ -443,7 +446,8 @@ class HyperbandDriver:
         if len(self.hyperbands) < self.max_hyperbands:
             self.hyperbands.append(Hyperband(min_budget=self.min_budget,
                                              max_budget=self.max_budget,
-                                             reduction_ratio=self.reduction_ratio))
+                                             reduction_ratio=self.reduction_ratio,
+                                             reset_first_round_nan=self.reset_first_round_nan))
             return self.get_next_hyperband_trial()
         return None, None
 
@@ -523,10 +527,11 @@ class HyperbandDriver:
 @click.option('--bohb-min-bandwidth', type=float, default=1e-3)
 @click.option('--bohb-bandwidth-estimation', default='normal_reference')
 @click.option('--bohb-bandwidth-factor', type=float, default=3)
+@click.option('--reset-first-round-nan/--no-reset-first-round-nan', default=True)
 def run(module, exp_path, min_budget, max_budget, reduction_ratio, max_hyperbands, sleep_interval, mode,
         bohb_random_ratio, bohb_guided_ratio, bohb_random_size, bohb_guided_size,
         bohb_result_size_threshold, bohb_good_ratio, bohb_model_cache_time,
-        bohb_min_bandwidth, bohb_bandwidth_estimation, bohb_bandwidth_factor):
+        bohb_min_bandwidth, bohb_bandwidth_estimation, bohb_bandwidth_factor, reset_first_round_nan):
     exp_path = os.path.abspath(exp_path)
     trial_gen = Generator(module, exp_path)
     param_gen = BOHBParamGen(module, exp_path,
@@ -549,7 +554,8 @@ def run(module, exp_path, min_budget, max_budget, reduction_ratio, max_hyperband
                              reduction_ratio=reduction_ratio,
                              sleep_interval=sleep_interval,
                              max_hyperbands=max_hyperbands,
-                             mode=mode)
+                             mode=mode,
+                             reset_first_round_nan=reset_first_round_nan)
     driver.start()
 
 
