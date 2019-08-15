@@ -375,10 +375,6 @@ class Hyperband:
     def report_trial(self, bracket_idx, round_idx, trial, metric):
         # mark inactive, set metric
         # make verdict for all completed rounds
-        if math.isfinite(metric):
-            log_print('hyperband received report', bracket_idx, round_idx, trial, metric)
-        else:
-            log_print(Fore.LIGHTRED_EX + 'hyperband received report', bracket_idx, round_idx, trial, metric)
         requested_round = self.brackets[bracket_idx][round_idx]
         requested_element = None
         for el in requested_round:
@@ -387,6 +383,14 @@ class Hyperband:
         assert requested_element
         requested_element.metric = metric
         requested_element.active = False
+        if math.isfinite(metric):
+            log_print('hyperband received report', bracket_idx, round_idx, trial, metric)
+        else:
+            log_print(Fore.LIGHTRED_EX + 'hyperband received report', bracket_idx, round_idx, trial, metric)
+            # reset first rounder null results
+            if round_idx == 0:
+                requested_element.trial = None
+                requested_element.metric = None
 
 
 class HyperbandDriver:
