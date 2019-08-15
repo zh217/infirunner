@@ -237,7 +237,8 @@ class BOHBParamGen(ParamGen):
                 with open(os.path.join(self.experiment_dir, dir, 'metric.tsv'), 'rb') as f:
                     for l in f:
                         budget, metric_time, metric_res = l.split(b'\t')
-                        budget_metric = metrics.setdefault(int(budget), [])
+                        budget = int(budget)
+                        budget_metric = metrics.setdefault(budget, [])
                         metric = float(metric_res)
                         budget_metric.append((dir, metric))
                         if not math.isfinite(metric):
