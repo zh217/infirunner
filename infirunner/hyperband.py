@@ -230,15 +230,24 @@ class BOHBParamGen(ParamGen):
 
         metrics = {}
 
+        nan_metrics = []
+
         for dir in active_dirs:
             try:
                 with open(os.path.join(self.experiment_dir, dir, 'metric.tsv'), 'rb') as f:
                     for l in f:
                         budget, metric_time, metric_res = l.split(b'\t')
                         budget_metric = metrics.setdefault(int(budget), [])
-                        budget_metric.append((dir, float(metric_res)))
+                        metric = float(metric_res)
+                        budget_metric.append((dir, metric))
+                        if not math.isfinite(metric):
+                            nan_metrics.append((budget, dir))
             except FileNotFoundError:
                 continue
+        for budget in metrics.keys():
+            for trial_budget, dir in nan_metrics:
+                if budget > trial_budget:
+                    metrics[budget].append((dir, float('nan')))
         return metrics
 
     def get_next_parameter(self):
