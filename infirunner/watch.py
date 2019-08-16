@@ -164,24 +164,29 @@ class ExperimentWatcher:
             return json.load(f)
 
 
-def pprint_result(result, fields, limit, hide_inactive, ignore_inactive_nan):
+def pprint_result(result, fields, limit, threshold, hide_inactive, ignore_inactive_nan):
     slots_line = f'TOTAL SLOTS: {Fore.LIGHTBLUE_EX}{result["total_slots"]}' + ' ' * 2
     for k, v in result['slots'].items():
         slots_line += f'{Style.RESET_ALL}{k}: {Fore.LIGHTBLUE_EX}{v} '
     print(slots_line + Style.RESET_ALL)
     print()
-    title = f'{"TRIAL":24} {"BUDGET":>6} {"METRIC":>12} {"STEP":>6} {"REL":>6}'
+    title = f'{"TRIAL":24} {"BUDGET":>6} {"METRIC":>12} {"STEP":>6} {"REL":>7}'
     for field in fields:
         title += f' {field[:12]:>12}'
-    print(Fore.LIGHTBLACK_EX + title)
-    print('-' * len(title))
+    print(title)
+    print(Fore.LIGHTBLACK_EX + ('-' * len(title)))
     trials_data = result['trials']
     if hide_inactive:
         trials_data = [t for t in trials_data if t[1]['active']]
     elif ignore_inactive_nan:
         trials_data = [t for t in trials_data if
                        t[1]['active'] or (t[1]['metric'] is not None and math.isfinite(t[1]['metric']))]
-    trials_data.sort(key=lambda d: (d[1]['active'], d[1]['budget'] or -1, d[0]))
+    if threshold is not None:
+        trials_data = [t for t in trials_data if
+                       t[1]['active'] or (t[1]['metric'] is not None and t[1]['metric'] < threshold)]
+        trials_data.sort(key=lambda d: (d[1]['active'], -(d[1]['metric'] or float('inf')), d[1]['budget'] or -1, d[0]))
+    else:
+        trials_data.sort(key=lambda d: (d[1]['active'], d[1]['budget'] or -1, d[0]))
     if limit:
         trials_data = trials_data[-limit:]
     for trial, data in trials_data:
@@ -214,12 +219,11 @@ def pprint_result(result, fields, limit, hide_inactive, ignore_inactive_nan):
                 relative = max(relative, data["fields"][field]["relative"])
             except:
                 value = float('nan')
-                relative = 0
             val_str = f' {value:12.5f}'
             if len(val_str) != 13:
                 val_str = f' {"#HUMONGOUS#":>12}'
             subline += val_str
-        print(line + f'{max_steps:>6} {relative / 60:>6.1f}' + subline)
+        print(line + f'{max_steps:>6} {int(relative // 3600):>4}:{int((relative // 60) % 60):02}' + subline)
 
 
 @click.command()
@@ -228,9 +232,10 @@ def pprint_result(result, fields, limit, hide_inactive, ignore_inactive_nan):
 @click.option('--only')
 @click.option('--watch', type=float, default=0.)
 @click.option('--limit', type=int)
+@click.option('--threshold', type=float)
 @click.option('--ignore-inactive-nan/--no-ignore-inactive-nan', default=True)
 @click.argument('folder', required=True)
-def run(folder, fields, only, watch, limit, hide_inactive, ignore_inactive_nan):
+def run(folder, fields, only, watch, limit, hide_inactive, ignore_inactive_nan, threshold):
     fields = [field for field in fields.split(',') if field]
     if only:
         only = [t for t in only.split(',') if t]
@@ -239,10 +244,10 @@ def run(folder, fields, only, watch, limit, hide_inactive, ignore_inactive_nan):
     if watch:
         while True:
             clear_screen()
-            pprint_result(watcher.poll(only=only), fields, limit, hide_inactive, ignore_inactive_nan)
+            pprint_result(watcher.poll(only=only), fields, limit, threshold, hide_inactive, ignore_inactive_nan)
             time.sleep(watch)
     else:
-        pprint_result(watcher.poll(only=only), fields, limit, hide_inactive)
+        pprint_result(watcher.poll(only=only), fields, limit, threshold, hide_inactive, ignore_inactive_nan)
 
 
 if __name__ == '__main__':
