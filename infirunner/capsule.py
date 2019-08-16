@@ -29,7 +29,7 @@ class RunnerCapsule:
         self.params = start_params or {}
         self.turbo_index = turbo_index
         self.initialized = False
-        self.exp_path = exp_path
+        self.exp_path = os.path.abspath(exp_path)
         self.trial_id = trial_id
         self._param_wrappers = {}
         self._tb_writer = None
@@ -235,11 +235,11 @@ class RunnerCapsule:
     def load_state(self, load_path, override_params=True):
         if load_path is None:
             return None, None
-        print('loading saved states from', load_path)
         with open(os.path.join(load_path, 'state.json'), 'r', encoding='utf-8') as f:
             meta = json.load(f)
             self.steps = meta['steps']
             self.prev_time = meta['relative_time']
+            print('loading saved states from', load_path, 'steps', self.steps, 'prev_time', self.prev_time)
             if override_params:
                 self.params = meta['params']
 

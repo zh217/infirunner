@@ -89,6 +89,9 @@ class ParamGen(abc.ABC):
     def get_next_parameter(self):
         return self.capsule.gen_params(use_default=False, skip_const=True)
 
+    def should_terminate_trials(self, trials):
+        return []
+
 
 class RandomParamGen(ParamGen):
     pass
@@ -98,7 +101,7 @@ class BOHBParamGen(ParamGen):
     def __init__(self, module, experiment_dir,
                  random_ratio, random_sample_size,
                  guided_ratio, guided_sample_size,
-                 result_size_threshold=None, good_ratio=0.15,
+                 result_size_threshold=None, good_ratio=0.15, early_stop_ratio=1 / math.e,
                  model_cache_time=30, mode='minimize',
                  min_bandwidth=1e-3, bandwidth_estimation='normal_reference',
                  bandwidth_factor=3.):
@@ -119,6 +122,7 @@ class BOHBParamGen(ParamGen):
         self.random_dice = UniformBernoulli(random_ratio)
         self.guided_dice = UniformBernoulli(guided_ratio / (1 - random_ratio))
         self.good_ratio = good_ratio
+        self.early_stop_ratio = early_stop_ratio
         self.random_sample_size = random_sample_size
         self.guided_sample_size = guided_sample_size
         self.result_size_threshold = result_size_threshold
@@ -271,6 +275,40 @@ class BOHBParamGen(ParamGen):
                 if budget > trial_budget:
                     metrics[budget].append((dir, float('nan')))
         return metrics
+
+    def should_terminate_trials(self, trials):
+        if not trials:
+            return []
+        trials = set(trials)
+        should_terminate = set()
+        metrics = self.get_all_budget_metrics()
+        good_metrics_threshold = {}
+        for budget, trials_data in metrics.items():
+            budget_data = []
+            for _, metric in trials_data:
+                if math.isfinite(metric):
+                    budget_data.append(metric)
+            if len(budget_data) > self.result_size_threshold:
+                budget_data.sort()  # ascending sort
+                budget_data = budget_data[:int_ceil(len(budget_data) * self.early_stop_ratio)]
+                good_metrics_threshold[budget] = budget_data[-1]
+
+        for budget, trials_data in sorted(metrics.items(), key=lambda x: x[0], reverse=True):
+            if budget == 0:
+                continue
+            prev_threshold = good_metrics_threshold.get(budget - 1)
+            if prev_threshold is None:
+                continue
+            for trial, metric in trials_data:
+                if trial not in trials:
+                    continue
+                if metric < prev_threshold:
+                    continue
+                log_print(Fore.LIGHTBLACK_EX + 'adding trial', trial, 'to termination list.',
+                          'budget', budget, 'metric', metric, 'threshold', prev_threshold)
+                should_terminate.add(trial)
+
+        return list(should_terminate)
 
     def get_next_parameter(self):
         if self.random_dice():
@@ -513,13 +551,13 @@ class HyperbandDriver:
         return total_slots
 
     def check_for_completed_trials(self):
-        completed_trials = set()
+        completed_trials = []
         watcher_result = {k: v for k, v in
                           self.watcher.poll(slots=False, only=[t.trial for _, t in self.watch_active_trials],
                                             fields=False)['trials'] if not v['active']}
         for hyperband_idx, trial in self.watch_active_trials:
             if trial.trial in watcher_result:
-                completed_trials.add(trial)
+                completed_trials.append(trial)
                 trial_result = watcher_result[trial.trial]
                 log_print(Fore.LIGHTBLACK_EX + f'obtained watcher result for {trial.trial}')
                 if trial_result['budget'] != trial.budget:
@@ -531,6 +569,11 @@ class HyperbandDriver:
                     metric = -metric
                 self.hyperbands[hyperband_idx].report_trial(trial.bracket, trial.round, trial.trial, metric)
         self.watch_active_trials = [t for t in self.watch_active_trials if t[1] not in completed_trials]
+
+    def early_stop_trials(self):
+        for should_stop in self.param_generator.should_terminate_trials([t[1].trial for t in self.watch_active_trials]):
+            log_print(Fore.RED + 'requesting early stopping of trial', should_stop)
+            open(os.path.join(self.experiment_dir, should_stop, 'terminate'), 'ab').close()
 
     def start_trials(self):
         n_slots = self.get_available_slots()
@@ -545,7 +588,7 @@ class HyperbandDriver:
     def save_hyberband_data(self):
         with open(os.path.join(self.experiment_dir, 'hyperbands.json'), 'w', encoding='utf-8') as f:
             h_data = {
-                'active': [trial.serialize() for trial in self.watch_active_trials],
+                'active': [(idx, trial.serialize()) for idx, trial in self.watch_active_trials],
                 'hyberbands': [hyperband.serialize() for hyperband in self.hyperbands]
             }
             json.dump(h_data, f, ensure_ascii=False, allow_nan=True, indent=2)
@@ -555,7 +598,7 @@ class HyperbandDriver:
         with open(path, 'r', encoding='utf_8') as f:
             data = json.load(f)
         self.watch_active_trials = [BracketElement.deserialize(trial) for trial in data]
-        self.hyperbands = [Hyperband.deserialize(hb) for hb in data['hyperbands']]
+        self.hyperbands = [(idx, Hyperband.deserialize(hb)) for idx, hb in data['hyperbands']]
 
     def start(self):
         last_watching = set()
@@ -612,7 +655,8 @@ def run(module, exp_path, min_budget, max_budget, reduction_ratio, max_hyperband
                              mode=mode,
                              min_bandwidth=bohb_min_bandwidth,
                              bandwidth_estimation=bohb_bandwidth_estimation,
-                             bandwidth_factor=bohb_bandwidth_factor)
+                             bandwidth_factor=bohb_bandwidth_factor,
+                             early_stop_ratio=1. / reduction_ratio)
     driver = HyperbandDriver(experiment_dir=exp_path,
                              trial_generator=trial_gen,
                              param_generator=param_gen,

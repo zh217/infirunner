@@ -31,10 +31,11 @@ class RunningAverage:
         if flush:
             self.reset()
 
-    def write_to_tb(self, flush=True):
-        if self.capsule.is_leader():
-            writer = self.capsule.get_tb_writer()
-            writer.add_scalar(self.key, self.get(), self.capsule.steps)
+    def write_to_tb(self, flush=True, start_budget=1):
+        if self.capsule.budget_current >= start_budget:
+            if self.capsule.is_leader():
+                writer = self.capsule.get_tb_writer()
+                writer.add_scalar(self.key, self.get(), self.capsule.steps)
         if flush:
             self.reset()
 
