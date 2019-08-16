@@ -222,11 +222,23 @@ class Supervisor:
                                    maxMemory=self.gpu_max_mem,
                                    excludeID=exclude)
 
+    def check_kill_flags(self):
+        for p in self.active_procs:
+            if os.path.exists(os.path.join(p['trial_dir'], 'kill')):
+                self.print_log(Fore.RED + 'requested SIGKILL', os.path.join(p['trial_dir']))
+                p['proc'].kill()
+                os.unlink(os.path.join(p['trial_dir'], 'kill'))
+            if os.path.exists(os.path.join(p['trial_dir'], 'terminate')):
+                self.print_log(Fore.RED + 'requesting SIGTERM', os.path.join(p['trial_dir']))
+                p['proc'].terminate()
+                os.unlink(os.path.join(p['trial_dir'], 'terminate'))
+
     def start(self):
         atexit.register(self.cleanup)
         while True:
             try:
                 self.supervise()
+                self.check_kill_flags()
                 time.sleep(self.poll_interval)
             except KeyboardInterrupt:
                 self.print_log('Received stop signal, exiting')

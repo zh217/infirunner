@@ -1,5 +1,4 @@
 import abc
-import enum
 import importlib
 import json
 import math
@@ -15,9 +14,7 @@ import infirunner.capsule
 import numpy as np
 import scipy.stats as sps
 
-import infirunner.param as param
-from collections import namedtuple
-from colorama import Style, Fore, Back
+from colorama import Style, Fore
 from statsmodels.nonparametric.api import KDEMultivariate
 
 from infirunner.util import make_trial_id, UniformBernoulli
@@ -35,29 +32,53 @@ def int_floor(x):
     return int(math.floor(x))
 
 
-class ElementVerdict(enum.Enum):
-    GOOD = 'good'
-    BAD = 'bad'
-    UNKNOWN = 'unknown'
-
-
 def log_print(*args):
     print(Fore.LIGHTBLACK_EX + f'[{datetime.datetime.now()}]' + Style.RESET_ALL, *args, file=sys.stderr)
 
 
 # Note that the metric is always assumed to be optimized towards minimum.
 class BracketElement:
-    def __init__(self, bracket, round, budget, metric, trial, active):
+    def __init__(self, bracket, round, budget, metric, trial, active, promoted):
         self.bracket = bracket
         self.round = round
         self.budget = budget
         self.metric = metric
         self.trial = trial
         self.active = active
+        self.promoted = promoted
+
+    def __eq__(self, other):
+        return self is other or (self.bracket == other.bracket and
+                                 self.round == other.round and
+                                 self.budget == other.budget and
+                                 self.metric == other.metric and
+                                 self.trial == other.trial and
+                                 self.active == other.active and
+                                 self.promoted == other.promoted)
 
     def __repr__(self):
         return (f'<BracketElement bracket={self.bracket} round={self.round} budget={self.budget} '
-                f'metric={self.metric} trial={self.trial} active={self.active}>')
+                f'metric={self.metric} trial={self.trial} active={self.active} promoted={self.promoted}>')
+
+    def serialize(self):
+        return {
+            'bracket': self.bracket,
+            'round': self.round,
+            'budget': self.budget,
+            'trial': self.trial,
+            'active': self.active,
+            'promoted': self.promoted
+        }
+
+    @staticmethod
+    def deserialize(data):
+        return BracketElement(bracket=data['bracket'],
+                              round=data['round'],
+                              budget=data['budget'],
+                              metric=data['metric'],
+                              trial=data['trial'],
+                              active=data['active'],
+                              promoted=data['promoted'])
 
 
 class ParamGen(abc.ABC):
@@ -265,7 +286,7 @@ class BOHBParamGen(ParamGen):
 
 
 class Hyperband:
-    def __init__(self, min_budget, max_budget, reset_first_round_nan=True, reduction_ratio=math.e):
+    def __init__(self, min_budget, max_budget, reset_nan_trial=True, reduction_ratio=math.e):
         self.min_budget = min_budget
         self.max_budget = max_budget
         self.reduction_ratio = reduction_ratio
@@ -273,7 +294,34 @@ class Hyperband:
         self.brackets = self.make_brackets()
         self.cur_bracket_idx = 0
         self.cur_round_idx = 0
-        self.reset_first_round_nan = reset_first_round_nan
+        self.reset_nan_trial = reset_nan_trial
+
+    def serialize(self):
+        return {
+            'min_budget': self.min_budget,
+            'max_budget': self.max_budget,
+            'reduction_ratio': self.reduction_ratio,
+            'bracket_max': self.bracket_max,
+            'brackets': [[[btrial.serialize() for btrial in round] for round in bracket] for bracket in self.brackets],
+            'cur_bracket_idx': self.cur_bracket_idx,
+            'cur_round_idx': self.cur_round_idx,
+            'reset_nan_trial': self.reset_nan_trial
+        }
+
+    @staticmethod
+    def deserialize(data):
+        self = Hyperband(min_budget=data['min_budget'],
+                         max_budget=data['max_budget'],
+                         reduction_ratio=data['reduction_ratio'],
+                         reset_nan_trial=data['reset_nan_trial'])
+        self.brackets = [[[BracketElement.deserialize(btrial)
+                           for btrial in round]
+                          for round in bracket]
+                         for bracket in data['brackets']]
+        self.cur_round_idx = data['cur_round_idx']
+        self.cur_bracket_idx = data['cur_bracket_idx']
+        self.bracket_max = data['bracket_max']
+        return self
 
     def pprint_brackets(self):
         for bracket_idx, bracket in enumerate(self.brackets):
@@ -316,7 +364,8 @@ class Hyperband:
                                                          budget=budget,
                                                          metric=None,
                                                          trial=None,
-                                                         active=False))
+                                                         active=False,
+                                                         promoted=False))
                 bracket.append(bracket_trials)
             brackets.append(bracket)
         return brackets
@@ -344,15 +393,15 @@ class Hyperband:
                 ret.active = True
                 return ret
             else:
-                cur_round_trial_ids = set(e.trial for e in cur_round if e.trial is not None)
                 last_round_completed_trials = [e for e in cur_bracket[self.cur_round_idx - 1]
                                                if e.metric is not None and math.isfinite(e.metric)
-                                               and e.trial not in cur_round_trial_ids]
+                                               and not e.promoted]
                 if last_round_completed_trials:
                     # this COULD be empty, since all elements in previous round may have failed with NaN
                     # in that case the caller should initialize a new one to run
                     last_round_completed_trials.sort(key=lambda e: e.metric)
                     best_available_trial = last_round_completed_trials[0]
+                    best_available_trial.promoted = True
                     log_print(Fore.LIGHTBLACK_EX + 'promote best available trial', best_available_trial.trial,
                               best_available_trial.metric,
                               '(worst is', last_round_completed_trials[-1].metric, ')')
@@ -390,15 +439,15 @@ class Hyperband:
         else:
             log_print(Fore.LIGHTRED_EX + 'hyperband received report', bracket_idx, round_idx, trial, metric)
             # reset first rounder null results
-            if round_idx == 0 and self.reset_first_round_nan:
-                log_print(Fore.LIGHTRED_EX + 'reset first round nan trial')
+            if self.reset_nan_trial:
+                log_print(Fore.LIGHTRED_EX + 'nan trial')
                 requested_element.trial = None
                 requested_element.metric = None
 
 
 class HyperbandDriver:
     def __init__(self, experiment_dir, trial_generator, param_generator, min_budget, max_budget,
-                 reduction_ratio, sleep_interval, max_hyperbands, mode, reset_first_round_nan):
+                 reduction_ratio, sleep_interval, max_hyperbands, mode, reset_nan_trial):
         self.experiment_dir = experiment_dir
         self.min_budget = min_budget
         self.max_budget = max_budget
@@ -411,7 +460,7 @@ class HyperbandDriver:
         self.param_generator = param_generator
         self.max_hyperbands = max_hyperbands
         self.is_maximize = mode == 'maximize'
-        self.reset_first_round_nan = reset_first_round_nan
+        self.reset_nan_trial = reset_nan_trial
 
     def generate_new_trial(self, end_budget, n_gpu=1):
         params = self.param_generator.get_next_parameter()
@@ -448,7 +497,7 @@ class HyperbandDriver:
             self.hyperbands.append(Hyperband(min_budget=self.min_budget,
                                              max_budget=self.max_budget,
                                              reduction_ratio=self.reduction_ratio,
-                                             reset_first_round_nan=self.reset_first_round_nan))
+                                             reset_nan_trial=self.reset_nan_trial))
             return self.get_next_hyperband_trial()
         return None, None
 
@@ -493,6 +542,21 @@ class HyperbandDriver:
                 log_print(Fore.LIGHTBLACK_EX + f'watching trial {new_trial.trial} of band {hyperband_idx}')
                 self.watch_active_trials.append((hyperband_idx, new_trial))
 
+    def save_hyberband_data(self):
+        with open(os.path.join(self.experiment_dir, 'hyperbands.json'), 'w', encoding='utf-8') as f:
+            h_data = {
+                'active': [trial.serialize() for trial in self.watch_active_trials],
+                'hyberbands': [hyperband.serialize() for hyperband in self.hyperbands]
+            }
+            json.dump(h_data, f, ensure_ascii=False, allow_nan=True, indent=2)
+
+    def load_hyperband_data(self, path):
+        log_print('loading hyperbands data from', path)
+        with open(path, 'r', encoding='utf_8') as f:
+            data = json.load(f)
+        self.watch_active_trials = [BracketElement.deserialize(trial) for trial in data]
+        self.hyperbands = [Hyperband.deserialize(hb) for hb in data['hyperbands']]
+
     def start(self):
         last_watching = set()
         while True:
@@ -503,6 +567,7 @@ class HyperbandDriver:
                 for idx, hb in enumerate(self.hyperbands):
                     log_print(Fore.LIGHTBLACK_EX + '----- Hyperband', idx, id(hb), '-----')
                     hb.pprint_brackets()
+                self.save_hyberband_data()
             last_watching = cur_watching
             if len(self.hyperbands) == self.max_hyperbands and all(hb.is_complete() for hb in self.hyperbands):
                 break
@@ -528,11 +593,12 @@ class HyperbandDriver:
 @click.option('--bohb-min-bandwidth', type=float, default=1e-3)
 @click.option('--bohb-bandwidth-estimation', default='normal_reference')
 @click.option('--bohb-bandwidth-factor', type=float, default=3)
-@click.option('--reset-first-round-nan/--no-reset-first-round-nan', default=True)
+@click.option('--reset-nan-trial/--no-reset-nan-trial', default=True)
+@click.option('--load')
 def run(module, exp_path, min_budget, max_budget, reduction_ratio, max_hyperbands, sleep_interval, mode,
         bohb_random_ratio, bohb_guided_ratio, bohb_random_size, bohb_guided_size,
         bohb_result_size_threshold, bohb_good_ratio, bohb_model_cache_time,
-        bohb_min_bandwidth, bohb_bandwidth_estimation, bohb_bandwidth_factor, reset_first_round_nan):
+        bohb_min_bandwidth, bohb_bandwidth_estimation, bohb_bandwidth_factor, reset_nan_trial, load):
     exp_path = os.path.abspath(exp_path)
     trial_gen = Generator(module, exp_path)
     param_gen = BOHBParamGen(module, exp_path,
@@ -556,7 +622,9 @@ def run(module, exp_path, min_budget, max_budget, reduction_ratio, max_hyperband
                              sleep_interval=sleep_interval,
                              max_hyperbands=max_hyperbands,
                              mode=mode,
-                             reset_first_round_nan=reset_first_round_nan)
+                             reset_nan_trial=reset_nan_trial)
+    if load is not None:
+        driver.load_hyperband_data(load)
     driver.start()
 
 
