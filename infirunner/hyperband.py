@@ -19,7 +19,7 @@ from statsmodels.nonparametric.api import KDEMultivariate
 
 from infirunner.util import make_trial_id, UniformBernoulli
 from infirunner.generator import Generator
-from infirunner.watch import ExperimentWatcher
+from infirunner.watch import ExperimentWatcher, FastTSVTail
 
 colorama.init()
 
@@ -82,15 +82,13 @@ class BracketElement:
 
 
 class ParamGen(abc.ABC):
-    def __init__(self, module):
+    def __init__(self, module, experiment_dir):
         importlib.import_module(module)
         self.capsule = infirunner.capsule.active_capsule
+        self.experiment_dir = experiment_dir
 
     def get_next_parameter(self):
         return self.capsule.gen_params(use_default=False, skip_const=True)
-
-    def should_terminate_trials(self, trials):
-        return []
 
 
 class RandomParamGen(ParamGen):
@@ -105,7 +103,7 @@ class BOHBParamGen(ParamGen):
                  model_cache_time=30, mode='minimize',
                  min_bandwidth=1e-3, bandwidth_estimation='normal_reference',
                  bandwidth_factor=3.):
-        super().__init__(module)
+        super().__init__(module, experiment_dir)
 
         assert 0 <= random_ratio <= 1
         assert 0 <= guided_ratio <= 1
@@ -118,7 +116,6 @@ class BOHBParamGen(ParamGen):
             result_size_threshold = max(len(sample_params) + 1, result_size_threshold)
         log_print(Fore.LIGHTBLACK_EX + 'model-based threshold is', result_size_threshold)
 
-        self.experiment_dir = experiment_dir
         self.random_dice = UniformBernoulli(random_ratio)
         self.guided_dice = UniformBernoulli(guided_ratio / (1 - random_ratio))
         self.good_ratio = good_ratio
@@ -368,6 +365,8 @@ class Hyperband:
                 actives = [e for e in round if e.active]
                 dones = [e for e in round if e.metric is not None]
                 good_dones = [e for e in dones if math.isfinite(e.metric)]
+                if not round:
+                    continue
                 budget = round[0].budget
                 to_print = (f'\tround {round_idx:1}: {len(round):3} trials with {budget:3} budgets, ' +
                             f'{len(actives):3} active, {len(dones):3} complete')
@@ -419,6 +418,8 @@ class Hyperband:
         # if caller should wait, return None
         # return: BracketElement, note that if el.trial is empty the caller is responsible for filling it
         if self.cur_bracket_idx > self.bracket_max:
+            self.mark_all_brackets()
+            log_print(Fore.LIGHTGREEN_EX + 'All brackets complete')
             raise StopIteration
         cur_bracket = self.brackets[self.cur_bracket_idx]
         cur_round = cur_bracket[self.cur_round_idx]
@@ -444,10 +445,13 @@ class Hyperband:
                               best_available_trial.metric,
                               '(worst is', last_round_completed_trials[-1].metric, ')')
                     ret.trial = best_available_trial.trial
-
-                ret.active = True
-                # if no trial is present, the caller is responsible for filling it it
-                return ret
+                    ret.active = True
+                    # if no trial is present, the caller is responsible for filling it it
+                    return ret
+                else:
+                    log_print(Fore.LIGHTRED_EX + 'Insufficient previous rounders to continue', id(self))
+                    self.mark_all_brackets()
+                    raise StopIteration
 
         if self.is_round_complete(self.cur_bracket_idx, self.cur_round_idx):
             if self.cur_round_idx == len(cur_bracket) - 1:
@@ -460,6 +464,16 @@ class Hyperband:
             return self.request_trial()
         else:
             return None
+
+    def mark_all_brackets(self):
+        self.brackets = [self.mark_bracket_failed(bracket) for bracket in self.brackets]
+
+    def mark_bracket_failed(self, bracket):
+        cleaned_bracket = [self.mark_round_failed(round) for round in bracket]
+        return cleaned_bracket
+
+    def mark_round_failed(self, round):
+        return [t for t in round if t.trial is not None]
 
     def report_trial(self, bracket_idx, round_idx, trial, metric):
         # mark inactive, set metric
@@ -485,7 +499,8 @@ class Hyperband:
 
 class HyperbandDriver:
     def __init__(self, experiment_dir, trial_generator, param_generator, min_budget, max_budget,
-                 reduction_ratio, sleep_interval, max_hyperbands, mode, reset_nan_trial):
+                 reduction_ratio, sleep_interval, max_hyperbands, mode, reset_nan_trial,
+                 early_stop_min_budget, early_stop_threshold):
         self.experiment_dir = experiment_dir
         self.min_budget = min_budget
         self.max_budget = max_budget
@@ -499,6 +514,9 @@ class HyperbandDriver:
         self.max_hyperbands = max_hyperbands
         self.is_maximize = mode == 'maximize'
         self.reset_nan_trial = reset_nan_trial
+        self.early_stop_min_budget = early_stop_min_budget
+        self.early_stop_threshold = ((-early_stop_threshold if self.is_maximize else early_stop_threshold)
+                                     if early_stop_threshold is not None else float('inf'))
 
     def generate_new_trial(self, end_budget, n_gpu=1):
         params = self.param_generator.get_next_parameter()
@@ -571,9 +589,22 @@ class HyperbandDriver:
         self.watch_active_trials = [t for t in self.watch_active_trials if t[1] not in completed_trials]
 
     def early_stop_trials(self):
-        for should_stop in self.param_generator.should_terminate_trials([t[1].trial for t in self.watch_active_trials]):
-            log_print(Fore.RED + 'requesting early stopping of trial', should_stop)
-            open(os.path.join(self.experiment_dir, should_stop, 'terminate'), 'ab').close()
+        if self.early_stop_min_budget is None:
+            return
+        for _, trial_info in self.watch_active_trials:
+            try:
+                with FastTSVTail(os.path.join(self.experiment_dir, trial_info.trial, 'metric.tsv')) as f:
+                    budget, _, metric_res = f.tail()
+                    budget = int(budget)
+                    metric = float(metric_res)
+                    if self.is_maximize:
+                        metric = -metric
+                    if budget >= self.early_stop_min_budget and metric > self.early_stop_threshold:
+                        log_print(Fore.RED + 'requesting early stopping of trial', trial_info.trial,
+                                  'budget', budget, 'metric', metric)
+                        open(os.path.join(self.experiment_dir, trial_info.trial, 'terminate'), 'ab').close()
+            except FileNotFoundError:
+                continue
 
     def start_trials(self):
         n_slots = self.get_available_slots()
@@ -603,6 +634,7 @@ class HyperbandDriver:
     def start(self):
         last_watching = set()
         while True:
+            self.early_stop_trials()
             self.check_for_completed_trials()
             self.start_trials()
             cur_watching = set(t.trial for _, t in self.watch_active_trials)
@@ -622,26 +654,29 @@ class HyperbandDriver:
 @click.option('--module', required=True)
 @click.option('--min-budget', type=int, default=1)
 @click.option('--max-budget', type=int, required=True)
-@click.option('--sleep-interval', type=float, default=10.)
-@click.option('--max-hyperbands', type=int, default=2)
+@click.option('--sleep-interval', type=float, default=20.)
+@click.option('--max-hyperbands', type=int, default=5)
 @click.option('--reduction-ratio', type=float, default=math.e)
 @click.option('--mode', type=click.Choice(['maximize', 'minimize']), default='minimize')
-@click.option('--bohb-random-ratio', type=float, default=0.15)
-@click.option('--bohb-guided-ratio', type=float, default=0.7)
+@click.option('--bohb-random-ratio', type=float, default=0.2)
+@click.option('--bohb-guided-ratio', type=float, default=0.6)
 @click.option('--bohb-random-size', type=int, default=64)
-@click.option('--bohb-guided-size', type=int, default=128)
+@click.option('--bohb-guided-size', type=int, default=64)
 @click.option('--bohb-result-size-threshold', type=int)
-@click.option('--bohb-good-ratio', type=float, default=0.15)
-@click.option('--bohb-model-cache-time', type=float, default=30.)
+@click.option('--bohb-good-ratio', type=float, default=0.30)
+@click.option('--bohb-model-cache-time', type=float, default=900.)
 @click.option('--bohb-min-bandwidth', type=float, default=1e-3)
 @click.option('--bohb-bandwidth-estimation', default='normal_reference')
 @click.option('--bohb-bandwidth-factor', type=float, default=3)
 @click.option('--reset-nan-trial/--no-reset-nan-trial', default=True)
+@click.option('--early-stop-min-budget', type=int)
+@click.option('--early-stop-threshold', type=float)
 @click.option('--load')
 def run(module, exp_path, min_budget, max_budget, reduction_ratio, max_hyperbands, sleep_interval, mode,
         bohb_random_ratio, bohb_guided_ratio, bohb_random_size, bohb_guided_size,
         bohb_result_size_threshold, bohb_good_ratio, bohb_model_cache_time,
-        bohb_min_bandwidth, bohb_bandwidth_estimation, bohb_bandwidth_factor, reset_nan_trial, load):
+        bohb_min_bandwidth, bohb_bandwidth_estimation, bohb_bandwidth_factor, reset_nan_trial, load,
+        early_stop_min_budget, early_stop_threshold):
     exp_path = os.path.abspath(exp_path)
     trial_gen = Generator(module, exp_path)
     param_gen = BOHBParamGen(module, exp_path,
@@ -666,7 +701,9 @@ def run(module, exp_path, min_budget, max_budget, reduction_ratio, max_hyperband
                              sleep_interval=sleep_interval,
                              max_hyperbands=max_hyperbands,
                              mode=mode,
-                             reset_nan_trial=reset_nan_trial)
+                             reset_nan_trial=reset_nan_trial,
+                             early_stop_min_budget=early_stop_min_budget,
+                             early_stop_threshold=early_stop_threshold)
     if load is not None:
         driver.load_hyperband_data(load)
     driver.start()

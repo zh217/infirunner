@@ -207,7 +207,7 @@ def pprint_result(result, fields, limit, threshold, hide_inactive, ignore_inacti
             metric = float('nan')
         metric_str = f' {metric:12.5f}'
         if len(metric_str) != 13:
-            metric_str = f' {"#HUMONGOUS#":>12}'
+            metric_str = f' {metric:>12.5e}'
         line += f' {budget:6}{metric_str} '
         subline = ''
         max_steps = 0
@@ -221,9 +221,11 @@ def pprint_result(result, fields, limit, threshold, hide_inactive, ignore_inacti
                 value = float('nan')
             val_str = f' {value:12.5f}'
             if len(val_str) != 13:
-                val_str = f' {"#HUMONGOUS#":>12}'
+                val_str = f' {value:>12.5e}'
             subline += val_str
         print(line + f'{max_steps:>6} {int(relative // 3600):>4}:{int((relative // 60) % 60):02}' + subline)
+    print(Fore.LIGHTBLACK_EX + ('-' * len(title)))
+    print(title)
 
 
 @click.command()
