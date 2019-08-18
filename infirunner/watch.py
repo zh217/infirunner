@@ -170,7 +170,7 @@ def pprint_result(result, fields, limit, threshold, hide_inactive, ignore_inacti
         slots_line += f'{Style.RESET_ALL}{k}: {Fore.LIGHTBLUE_EX}{v} '
     print(slots_line + Style.RESET_ALL)
     print()
-    title = f'{"TRIAL":24} {"BUDGET":>6} {"METRIC":>12} {"STEP":>6} {"REL":>7}'
+    title = f'{"TRIAL":24} {"BUDGET":>6} {"METRIC":>12} {"STEP":>8} {"REL":>7}'
     for field in fields:
         title += f' {field[:12]:>12}'
     print(title)
@@ -223,7 +223,7 @@ def pprint_result(result, fields, limit, threshold, hide_inactive, ignore_inacti
             if len(val_str) != 13:
                 val_str = f' {value:>12.5e}'
             subline += val_str
-        print(line + f'{max_steps:>6} {int(relative // 3600):>4}:{int((relative // 60) % 60):02}' + subline)
+        print(line + f'{max_steps:>8} {int(relative // 3600):>4}:{int((relative // 60) % 60):02}' + subline)
     print(Fore.LIGHTBLACK_EX + ('-' * len(title)))
     print(title)
 

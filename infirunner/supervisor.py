@@ -65,7 +65,8 @@ def get_trial_info(trial_dir, load_start_state=False, load_metric=False):
 
 
 class Supervisor:
-    def __init__(self, experiment_dir, gpu_per_process, poll_interval, exclude_gpus, gpu_max_mem, gpu_max_load, mode):
+    def __init__(self, experiment_dir, gpu_per_process, cuda_sync,
+                 poll_interval, exclude_gpus, gpu_max_mem, gpu_max_load, mode):
         self.experiment_dir = os.path.abspath(experiment_dir)
         self.exclude_gpus = exclude_gpus
         self.gpu_per_process = gpu_per_process
@@ -77,6 +78,7 @@ class Supervisor:
         self.last_active_count = 0
         self.last_slots = 0
         self.mode = mode
+        self.cuda_sync = cuda_sync
         self.slots_file_path = os.path.join(experiment_dir, f'slots_{socket.getfqdn()}')
         os.makedirs(experiment_dir, exist_ok=True)
         if os.path.exists(self.slots_file_path):
@@ -195,13 +197,17 @@ class Supervisor:
 
         # run capsule
 
+        env = {'CUDA_VISIBLE_DEVICES': str(gpu_idx),
+               'INFR_TRIAL': run_info['trial_id'],
+               'INFR_EXP_PATH': self.experiment_dir,
+               'INFR_MODE': self.mode,
+               'INFR_REDIRECT_IO': '1',
+               'INFR_START_STATE': os.path.join(run_info['trial_dir'], 'start_state.json')}
+        if self.cuda_sync:
+            env['CUDA_LAUNCH_BLOCKING'] = '1'
+
         proc = subprocess.Popen([sys.executable, '-m', run_info['start_state']['module_name']],
-                                env={'CUDA_VISIBLE_DEVICES': str(gpu_idx),
-                                     'INFR_TRIAL': run_info['trial_id'],
-                                     'INFR_EXP_PATH': self.experiment_dir,
-                                     'INFR_MODE': self.mode,
-                                     'INFR_REDIRECT_IO': '1',
-                                     'INFR_START_STATE': os.path.join(run_info['trial_dir'], 'start_state.json')})
+                                env=env)
 
         self.print_log('started worker', proc.pid, 'for', run_info['trial_id'], self.mode)
 
@@ -252,10 +258,12 @@ class Supervisor:
 @click.option('--gpu-max-mem', type=float, default=0.05)
 @click.option('--gpu-max-load', type=float, default=0.1)
 @click.option('--mode', type=click.Choice(['train', 'debug', 'turbo']), default='train')
+@click.option('--cuda-sync/--no-cuda-sync', default=False)
 @click.argument('folder', required=True)
-def run(folder, exclude_gpus, gpu_per_process, poll_interval, gpu_max_mem, gpu_max_load, mode):
+def run(folder, exclude_gpus, gpu_per_process, poll_interval, gpu_max_mem, gpu_max_load, mode, cuda_sync):
     pprint.pprint(locals(), stream=sys.stderr)
     supervisor = Supervisor(folder,
+                            cuda_sync=cuda_sync,
                             gpu_per_process=gpu_per_process,
                             poll_interval=poll_interval,
                             exclude_gpus=[int(idx) for idx in exclude_gpus.split(',')] if exclude_gpus else [],

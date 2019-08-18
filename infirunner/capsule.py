@@ -217,6 +217,7 @@ class RunnerCapsule:
         if not math.isfinite(metric) or self.budget_current >= self.budget_end:
             if self._tb_writer is not None:
                 self._tb_writer.close()
+            print('exit at metric', metric, 'budget', self.budget_current, file=sys.stderr)
             sys.exit()
 
     def save_state(self):
