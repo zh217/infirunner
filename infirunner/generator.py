@@ -53,6 +53,8 @@ class Generator:
         state['end_budget'] = end_budget
         with open(os.path.join(self.capsule.save_path, f'start_state.json'), 'w', encoding='utf-8') as f:
             json.dump(state, f, ensure_ascii=False, indent=2, allow_nan=True)
+        with open(os.path.join(self.capsule.save_path, f'last_state.json'), 'w', encoding='utf-8') as f:
+            json.dump(state, f, ensure_ascii=False, indent=2, allow_nan=True)
         return state
 
 
