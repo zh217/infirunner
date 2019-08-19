@@ -436,8 +436,6 @@ class Hyperband:
                                                if e.metric is not None and math.isfinite(e.metric)
                                                and not e.promoted]
                 if last_round_completed_trials:
-                    # this COULD be empty, since all elements in previous round may have failed with NaN
-                    # in that case the caller should initialize a new one to run
                     last_round_completed_trials.sort(key=lambda e: e.metric)
                     best_available_trial = last_round_completed_trials[0]
                     best_available_trial.promoted = True
@@ -448,6 +446,8 @@ class Hyperband:
                     ret.active = True
                     # if no trial is present, the caller is responsible for filling it it
                     return ret
+                elif not self.is_round_complete(self.cur_bracket_idx, self.cur_round_idx - 1):
+                    return None
                 else:
                     log_print(Fore.LIGHTRED_EX + 'Insufficient previous rounders to continue', id(self))
                     self.mark_all_brackets()
