@@ -46,6 +46,14 @@ class RunnerCapsule:
         self.metric = None
 
     @property
+    def var_params(self):
+        res = {}
+        for k, v in self.param_gen.items():
+            if not isinstance(v, infirunner.param.ConstParam):
+                res[k] = self.params[k]
+        return res
+
+    @property
     def param_gen(self):
         return self._param_wrappers
 
