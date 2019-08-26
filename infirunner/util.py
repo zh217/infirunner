@@ -1,6 +1,8 @@
 import random
 import string
 import datetime
+import json
+import box
 
 
 def make_trial_id():
@@ -25,6 +27,19 @@ class UniformBernoulli:
         else:
             self.n_false += 1
         return ret
+
+
+def load_state(file):
+    with open(file) as f:
+        orig = json.load(f)['params']
+    ret = box.Box()
+    for k, v in orig.items():
+        ks = k.split('.')
+        parent = ret
+        for k_seg in ks[:-1]:
+            parent = parent.setdefault(k_seg, {})
+        parent[ks[-1]] = v
+    return ret
 
 
 if __name__ == '__main__':
