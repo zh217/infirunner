@@ -39,6 +39,16 @@ class RunningAverage:
         if flush:
             self.reset()
 
+    def write_and_flush(self, start_budget=1):
+        self.write_to_log()
+        self.write_to_tb(start_budget=start_budget)
+
+
+class RunningAverageGroup:
+    def __init__(self, capsule, keys):
+        for k in keys:
+            self.__dict__[k] = RunningAverage(capsule, k)
+
 
 class Timer:
     def __init__(self, *timeouts, unit='seconds'):

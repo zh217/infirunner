@@ -159,6 +159,9 @@ class RunnerCapsule:
     def running_average(self, key):
         return infirunner.steppers.RunningAverage(self, key)
 
+    def running_averages(self, *keys):
+        return infirunner.steppers.RunningAverageGroup(self, keys)
+
     def step(self, size=1):
         self.steps += size
 
@@ -259,7 +262,7 @@ class RunnerCapsule:
             metadata = None
 
         try:
-            model_state = torch.load(os.path.join(load_path, 'model.pt'))
+            model_state = torch.load(os.path.join(load_path, 'model.pt'), map_location='cpu')
         except FileNotFoundError:
             model_state = None
         return model_state, metadata
