@@ -159,8 +159,8 @@ class RunnerCapsule:
     def running_average(self, key):
         return infirunner.steppers.RunningAverage(self, key)
 
-    def running_averages(self, *keys):
-        return infirunner.steppers.RunningAverageGroup(self, keys)
+    def running_averages(self, *keys, prefix=''):
+        return infirunner.steppers.RunningAverageGroup(self, keys, prefix=prefix)
 
     def step(self, size=1):
         self.steps += size

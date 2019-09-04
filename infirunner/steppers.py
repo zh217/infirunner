@@ -45,10 +45,24 @@ class RunningAverage:
 
 
 class RunningAverageGroup:
-    def __init__(self, capsule, keys):
+    def __init__(self, capsule, keys, prefix=''):
         for k in keys:
-            self.__dict__[k] = RunningAverage(capsule, k)
+            self.__dict__[k] = RunningAverage(capsule, prefix + k)
 
+    def write_and_flush(self, start_budget=1):
+        for k, v in self.__dict__.items():
+            if isinstance(v, RunningAverage):
+                v.write_and_flush(start_budget)
+
+    def str_stats(self, *names):
+        ret = []
+        if not names:
+            names = self.__dict__.keys()
+        for k in names:
+            v = self.__dict__[k]
+            if isinstance(v, RunningAverage):
+                ret.append(f'{k}: {v.get():.5f}')
+        return ' '.join(ret)
 
 class Timer:
     def __init__(self, *timeouts, unit='seconds'):
