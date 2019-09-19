@@ -388,7 +388,7 @@ def make_capsule():
     return _cap
 
 
-def chain(decorators):
+def chain(*decorators):
     def wrap_f(f):
         for dec in reversed(decorators):
             f = dec(f)
