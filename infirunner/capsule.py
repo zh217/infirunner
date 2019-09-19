@@ -1,3 +1,4 @@
+import functools
 import math
 import os
 import random
@@ -385,3 +386,12 @@ def make_capsule():
     global active_capsule
     active_capsule = _cap
     return _cap
+
+
+def chain(decorators):
+    def wrap_f(f):
+        for dec in reversed(decorators):
+            f = dec(f)
+        return f
+
+    return wrap_f
