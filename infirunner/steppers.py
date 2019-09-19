@@ -54,6 +54,9 @@ class RunningAverageGroup:
             if isinstance(v, RunningAverage):
                 v.write_and_flush(start_budget)
 
+    def __getitem__(self, item):
+        return self.__dict__[item]
+
     def str_stats(self, *names):
         ret = []
         if not names:
@@ -63,6 +66,7 @@ class RunningAverageGroup:
             if isinstance(v, RunningAverage):
                 ret.append(f'{k}: {v.get():.5f}')
         return ' '.join(ret)
+
 
 class Timer:
     def __init__(self, *timeouts, unit='seconds'):
