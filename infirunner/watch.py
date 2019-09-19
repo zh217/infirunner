@@ -184,7 +184,7 @@ def pprint_result(result, fields, limit, threshold, hide_inactive, ignore_inacti
     if threshold is not None:
         trials_data = [t for t in trials_data if
                        t[1]['active'] or (t[1]['metric'] is not None and t[1]['metric'] < threshold)]
-        trials_data.sort(key=lambda d: (d[1]['active'], -(d[1]['metric'] or float('inf')), d[1]['budget'] or -1, d[0]))
+        trials_data.sort(key=lambda d: (d[1]['active'], -d[1]['metric'], d[1]['budget'] or -1, d[0]))
     else:
         trials_data.sort(key=lambda d: (d[1]['active'], d[1]['budget'] or -1, d[0]))
     if limit:
