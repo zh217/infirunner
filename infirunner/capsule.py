@@ -286,8 +286,9 @@ class RunnerCapsule:
     def initialize(self):
         if not self.initialized:
             self.initialized = True
-            self.params.update(self.gen_params(use_default=self.mode == DEBUG_MODE,
-                                               skip_const=False))
+            new_params = self.gen_params(use_default=self.mode == DEBUG_MODE, skip_const=False)
+            new_params.update(self.params)
+            self.params = new_params
 
     @contextmanager
     def deterministically_stochastic(self):
