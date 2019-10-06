@@ -426,40 +426,66 @@ class ParamGenerator:
     def __init__(self, capsule):
         self.capsule = capsule
 
-    def const(self, key, default, value):
+    def const(self, key, default, value=None):
+        if value is None:
+            value = default
         return self._make_param_wrapper(key, ConstParam(self.capsule, key, default, value))
 
-    def choice(self, key, default, choices, prob=None):
+    def choice(self, key, default, choices=None, prob=None):
+        if choices is None:
+            choices = default
+            default = choices[0]
         return self._make_param_wrapper(key, ChoiceParam(self.capsule, key, default, choices, prob))
 
-    def ordered(self, key, default, choices, prob=None):
+    def ordered(self, key, default, choices=None, prob=None):
+        if choices is None:
+            choices = default
+            default = choices[0]
         return self._make_param_wrapper(key, OrderedParam(self.capsule, key, default, choices, prob))
 
-    def randint(self, key, default, low, high):
+    def randint(self, key, default=None, *, low, high):
+        if default is None:
+            default = low
         return self._make_param_wrapper(key, RandomIntParam(self.capsule, key, default, low, high))
 
-    def unif(self, key, default, low, high):
+    def unif(self, key, default=None, *, low, high):
+        if default is None:
+            default = low
         return self._make_param_wrapper(key, UniformParam(self.capsule, key, default, low, high))
 
-    def qunif(self, key, default, low, high, q):
+    def qunif(self, key, default=None, *, low, high, q):
+        if default is None:
+            default = low
         return self._make_param_wrapper(key, QUniformParam(self.capsule, key, default, low, high, q))
 
-    def logunif(self, key, default, low, high):
+    def logunif(self, key, default=None, *, low, high):
+        if default is None:
+            default = low
         return self._make_param_wrapper(key, LogUniformParam(self.capsule, key, default, low, high))
 
-    def qlogunif(self, key, default, low, high, q):
+    def qlogunif(self, key, default=None, *, low, high, q):
+        if default is None:
+            default = low
         return self._make_param_wrapper(key, QLogUniformParam(self.capsule, key, default, low, high, q))
 
-    def normal(self, key, default, mean, std):
+    def normal(self, key, default=None, *, mean, std):
+        if default is None:
+            default = mean
         return self._make_param_wrapper(key, NormalParam(self.capsule, key, default, mean, std))
 
-    def qnormal(self, key, default, mean, std, q):
+    def qnormal(self, key, default=None, *, mean, std, q):
+        if default is None:
+            default = mean
         return self._make_param_wrapper(key, QNormalParam(self.capsule, key, default, mean, std, q))
 
-    def lognormal(self, key, default, mean, std):
+    def lognormal(self, key, default=None, *, mean, std):
+        if default is None:
+            default = np.exp(mean)
         return self._make_param_wrapper(key, LogNormalParam(self.capsule, key, default, mean, std))
 
-    def qlognormal(self, key, default, mean, std, q):
+    def qlognormal(self, key, default=None, *, mean, std, q):
+        if default is None:
+            default = np.exp(mean)
         return self._make_param_wrapper(key, QLogNormalParam(self.capsule, key, default, mean, std, q))
 
     def _make_param_wrapper(self, key, param_wrapper):
