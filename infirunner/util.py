@@ -3,6 +3,7 @@ import string
 import datetime
 import json
 import box
+import sys
 
 
 def make_trial_id():
@@ -46,6 +47,10 @@ def stride_list(orig, world_size, rank):
     l = len(orig)
     orig = orig[:l // world_size * world_size]
     return orig[rank::world_size]
+
+
+def log(*args, **kwargs):
+    print(*args, **kwargs, file=sys.stderr)
 
 
 if __name__ == '__main__':
