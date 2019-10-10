@@ -42,6 +42,12 @@ def load_state(file):
     return ret
 
 
+def stride_list(orig, world_size, rank):
+    l = len(orig)
+    orig = orig[:l // world_size * world_size]
+    return orig[rank::world_size]
+
+
 if __name__ == '__main__':
-    ub = UniformBernoulli(0.125)
-    print(''.join(['O' if ub() else '-' for _ in range(128)]))
+    print(stride_list(list(range(100)), 10, 3))
+    print(stride_list(list(range(99)), 10, 3))
