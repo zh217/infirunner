@@ -232,7 +232,7 @@ class RunnerCapsule:
             print('exit at metric', metric, 'budget', self.budget_current, file=sys.stderr)
             sys.exit()
 
-    def save_state(self):
+    def save_state(self, empty_ok=False):
         if self.turbo_index != 0:
             return
         out_dir = os.path.join(self.save_path, 'saves', f'{self.budget_current:05}')
@@ -242,6 +242,8 @@ class RunnerCapsule:
         if self.get_metadata_state:
             with open(os.path.join(out_dir, 'metadata.json'), 'w', encoding='utf-8') as f:
                 json.dump(self.get_metadata_state(), f, ensure_ascii=False, indent=2, allow_nan=True)
+        if not empty_ok:
+            assert self.get_model_state
         if self.get_model_state:
             torch.save(self.get_model_state(), os.path.join(out_dir, 'model.pt'))
 
