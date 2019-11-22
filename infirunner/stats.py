@@ -62,4 +62,4 @@ def plot_stats(folder, budget=1, replace_with_log=('opt.lr',), metric_column='ME
             else:
                 sns.scatterplot(x=c, y=metric_column, data=stats, ax=axs[i // 2][i % 2])
             i += 1
-    return fig
+    return stats
