@@ -1,9 +1,11 @@
+import os
 import random
 import string
 import datetime
 import json
 import box
 import sys
+import torch
 
 
 def make_trial_id():
@@ -41,6 +43,12 @@ def load_state(file):
             parent = parent.setdefault(k_seg, {})
         parent[ks[-1]] = v
     return ret
+
+
+def load_trial(path):
+    params = load_state(os.path.join(path, 'state.json'))
+    state = torch.load(os.path.join(path, 'model.pt'), map_location='cpu')
+    return box.Box(params=params, state=state)
 
 
 def stride_list(orig, world_size, rank):
