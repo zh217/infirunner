@@ -42,7 +42,7 @@ def plot_stats(folder, budget=1, replace_with_log=('opt.lr',), metric_column='ME
         stats['log10_' + k] = np.log10(stats[k])
     single_vals = list(replace_with_log)
     for c in stats.columns:
-        if stats[c].nunique() == 1:
+        if stats[c].nunique() <= 1:
             single_vals.append(c)
             print(f'{c:30} {stats[c].iloc[0]}')
     stats = stats.drop(columns=single_vals).sort_values(metric_column)
